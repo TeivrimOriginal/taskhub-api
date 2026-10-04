@@ -108,6 +108,10 @@ jobs:
     env:
       TEST_POSTGRES_ASYNC_URI: postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/taskhub_test
       TEST_POSTGRES_SYNC_URI: postgresql+psycopg://postgres:postgres@127.0.0.1:5432/taskhub_test
+      # The Redis *service* is reachable at 127.0.0.1; without these the cache-backed
+      # tests silently skip and the Redis code paths go unmeasured.
+      REDIS_URL: redis://127.0.0.1:6379/0
+      REDIS_CACHE_URL: redis://127.0.0.1:6379/1
 
     steps:
       - uses: actions/checkout@v4
@@ -127,6 +131,14 @@ jobs:
             sleep 1
           done
           echo "PostgreSQL never became ready" && exit 1
+
+      - name: Wait for Redis
+        run: |
+          for attempt in $(seq 1 30); do
+            if redis-cli -h 127.0.0.1 ping | grep -q PONG; then exit 0; fi
+            sleep 1
+          done
+          echo "Redis never became ready" && exit 1
 
       - name: Run the test suite
         run: pytest --cov-report=xml --cov-report=term-missing
@@ -184,13 +196,19 @@ jobs:
       - name: Models and migrations must agree
         run: alembic check
 
-      - name: Autogenerate must find nothing
+      - name: Autogenerate must find nothing to do
         run: |
+          # `alembic revision --autogenerate` always writes a file; what matters is
+          # whether it contains operations. An empty revision is the pass condition.
           alembic revision --autogenerate -m ci-drift-check
-          if [ -n "$(ls -t alembic/versions/*ci_drift_check*.py 2>/dev/null)" ]; then
-            echo "::error::alembic autogenerate produced a diff — commit a migration"
+          revision="$(ls -t alembic/versions/*ci_drift_check*.py | head -n 1)"
+          if grep -qE '^\s+op\.' "$revision"; then
+            echo "::error::alembic autogenerate produced operations — commit a migration"
+            sed -n '1,60p' "$revision"
             exit 1
           fi
+          rm -f "$revision"
+          echo "no drift"
 
   # ------------------------------------------------------------------- build image
   docker:
