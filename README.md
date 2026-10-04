@@ -15,6 +15,37 @@
 
 ---
 
+## What was actually run
+
+Every number below is copy-pasted from a real run, not estimated. Python 3.14.6,
+PostgreSQL 17.4 on `127.0.0.1:5434`, Redis reachable on `127.0.0.1:6379`:
+
+```
+pytest                         → 267 passed, 1 skipped in 38.89s
+coverage (branch=True)         → TOTAL 4283 stmts, 321 miss, 394 branch, 82 partial, 90.66%
+                                 gate is 85% — reached
+ruff check .                   → All checks passed!
+ruff format --check .          → 94 files already formatted
+mypy                           → Success: no issues found in 86 source files
+alembic upgrade head           → 8 tables (identical to Base.metadata), 21 indexes
+                                 citext installed; users.email udt_name = citext
+alembic downgrade base         → no application tables left
+smoke.py against live uvicorn  → 67 passed / 0 failed
+```
+
+`make migration-verify` runs the schema comparison end to end and rolls everything back
+again. The suite stays green on a bare machine with no Redis — the Redis-only tests skip —
+and gets stricter in CI, where `redis:7` and `postgres:16` are service containers.
+
+**What is _not_ verified here:** the machine this was last run on has no Docker, so
+`Dockerfile`, `docker-compose.yml` and `scripts/smoke.py` have never been executed locally
+against a live container stack. CI covers them instead — the `Docker image` job builds the
+production image and asserts it is non-root with a healthcheck, `Compose config` validates
+the compose file — but "docker compose up gives you a working system" is still a claim this
+repository has not proven end to end. It is the first thing to run on a machine with Docker.
+
+---
+
 ## Table of contents
 
 - [Why this project](#why-this-project)
@@ -425,7 +456,9 @@ taskhub-api/
 │   ├── unit/                    # no database
 │   ├── integration/             # real PostgreSQL (+ Redis when available)
 │   └── conftest.py              # fixtures: db, client, users, tokens
-├── scripts/smoke.py             # 67 assertions against a *running* server
+├── scripts/
+│   ├── smoke.py                   # 67 assertions against a *running* server
+│   └── verify_migrations.py       # upgrade → diff vs models → downgrade (destructive)
 ├── .github/workflows/           # ci.yml (7 jobs), release.yml
 ├── .github/dependabot.yml
 ├── .pre-commit-config.yaml
@@ -543,17 +576,17 @@ ever disagree.
 ## Testing
 
 ```bash
-make test             # whole suite, 85% coverage gate (measured: 89.7%)
+make test             # whole suite, 85% coverage gate (measured: 90.66%)
 pytest -m unit        # fast, no database — ~1.5 s
 pytest -m integration -k task
 make smoke            # 67 assertions against a *running* server
 ```
 
-Measured on this machine (Python 3.14, PostgreSQL 17):
+Measured on this machine (Python 3.14, PostgreSQL 17, Redis up):
 
 ```
-254 passed, 5 skipped in 32.31s
-TOTAL   4247 stmts   355 miss   394 branch   83 partial   89.74%
+267 passed, 1 skipped in 38.89s
+TOTAL   4283 stmts   321 miss   394 branch   82 partial   90.66%
 Required test coverage of 85% reached.
 ```
 
@@ -574,8 +607,26 @@ Highlights:
   identity, `asyncpg`-backed isolation rather than mocks;
 - every test asserts on the response envelope, not on internal objects.
 
-The five skips are the Redis-only tests: they are skipped when no Redis answers, so the
-suite is green on a bare laptop and stricter in CI where `redis:7` is a service.
+The single skip is the test that only makes sense without Redis (it asserts the
+degraded path). With no Redis at all the suite skips five cache-specific tests instead, so
+it is green on a bare laptop and stricter in CI where `redis:7` is a service.
+
+### Why `core = "sysmon"` in `pyproject.toml`
+
+Coverage is only a gate if the number is real. `coverage.py` picks its tracing core per
+interpreter: the C tracer (`ctrace`) up to Python 3.13, PEP 669 `sys.monitoring` on 3.14.
+On this code base they do not agree — `ctrace` silently drops hits on whole service bodies
+and on the closing `return` of every endpoint:
+
+| Core | Result |
+| --- | --- |
+| `ctrace` (coverage's default ≤ 3.13) | 82.88% — `services/task.py` reported as 56% |
+| `sysmon` (coverage's default on 3.14) | 89.81% — the same code, measured correctly |
+
+Nothing was untested; the tracer was wrong, and it was wrong *only* on the interpreter CI
+runs. `[tool.coverage.run] core = "sysmon"` pins the accurate core so the gate means the
+same thing everywhere — and `sysmon` is also the faster of the two here, 33 s against 44 s
+for the full suite.
 
 ---
 

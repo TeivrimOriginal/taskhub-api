@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
@@ -26,6 +27,15 @@ if TYPE_CHECKING:
     from app.models.user import User
 
 pytestmark = pytest.mark.integration
+
+#: TEST-NET-2 (RFC 5737) is reserved for documentation, so these addresses never leave
+#: the machine and never collide with a real client.
+_rate_limit_clients = itertools.count(1)
+
+
+def _next_client_ip() -> str:
+    """A caller address no previous test has spent."""
+    return f"198.51.100.{next(_rate_limit_clients)}"
 
 
 class TestCeleryConfiguration:
@@ -276,7 +286,13 @@ class TestRateLimiting:
 
 
 def _limited_client(settings: Settings, *, limit: int) -> AsyncContextManager[AsyncClient]:
-    """An ASGI client wired to an app whose rate limit is `limit` requests/window."""
+    """An ASGI client wired to an app whose rate limit is `limit` requests/window.
+
+    The limiter buckets on the caller address and Redis outlives a single test, so every
+    client here claims a throwaway one through `X-Forwarded-For`. Sharing `127.0.0.1` would
+    let one test's requests fill the next test's window — a failure that only reproduces
+    where Redis actually exists, which is exactly where the suite is supposed to be green.
+    """
     from app.core.config import Environment
     from app.main import create_app
 
@@ -293,4 +309,5 @@ def _limited_client(settings: Settings, *, limit: int) -> AsyncContextManager[As
     return AsyncClient(
         transport=ASGITransport(app=app),
         base_url="http://testserver",
+        headers={"X-Forwarded-For": _next_client_ip()},
     )

@@ -74,6 +74,10 @@ migration-check: ## Fail if the models drifted away from the migrations
 downgrade: ## Roll back one migration (rev=0002)
 	alembic downgrade $(or $(rev),-1)
 
+.PHONY: migration-verify
+migration-verify: ## Upgrade/downgrade the database and diff it against the models (DESTRUCTIVE)
+	$(PY) scripts/verify_migrations.py
+
 .PHONY: seed
 seed: ## Create the admin account and a demo data set
 	$(PY) -m app.cli create-admin
