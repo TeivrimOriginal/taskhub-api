@@ -133,12 +133,26 @@ jobs:
           echo "PostgreSQL never became ready" && exit 1
 
       - name: Wait for Redis
+        # `redis-cli` only exists inside the service container, not on the runner, so the
+        # probe uses the client library the project already depends on.
         run: |
-          for attempt in $(seq 1 30); do
-            if redis-cli -h 127.0.0.1 ping | grep -q PONG; then exit 0; fi
-            sleep 1
-          done
-          echo "Redis never became ready" && exit 1
+          python - <<'PY'
+          import sys
+          import time
+
+          import redis
+
+          client = redis.Redis(host="127.0.0.1", port=6379, socket_connect_timeout=1)
+          for _ in range(30):
+              try:
+                  if client.ping():
+                      print("redis is ready")
+                      sys.exit(0)
+              except redis.RedisError:
+                  time.sleep(1)
+          print("Redis never became ready")
+          sys.exit(1)
+          PY
 
       - name: Run the test suite
         run: pytest --cov-report=xml --cov-report=term-missing
