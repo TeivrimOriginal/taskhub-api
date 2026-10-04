@@ -12,7 +12,7 @@ from fastapi import FastAPI, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, ProgrammingError, SQLAlchemyError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.core.constants import ErrorCode
@@ -138,8 +138,28 @@ def register_exception_handlers(app: FastAPI) -> None:
             details={"constraint": constraint} if constraint else {},
         )
 
+    @app.exception_handler(ProgrammingError)
+    async def _handle_schema(request: Request, exc: ProgrammingError) -> JSONResponse:
+        """The database refused to parse the query.
+
+        In practice this is a schema that does not match the build: a missing relation, a
+        renamed column, a migration that never ran. Answering 503 "please retry" would be
+        a lie — no amount of retrying fixes it — and it would keep a broken instance in the
+        load balancer. The SQLSTATE is safe to return and is what makes this debuggable.
+        """
+        sqlstate = getattr(exc.orig, "sqlstate", None) or getattr(exc.orig, "pgcode", None)
+        logger.exception("schema_error", sqlstate=sqlstate, path=request.url.path)
+        return _envelope(
+            request,
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            code=ErrorCode.INTERNAL_ERROR,
+            message="The database schema does not match this build; run the migrations",
+            details={"sqlstate": sqlstate} if sqlstate else {},
+        )
+
     @app.exception_handler(SQLAlchemyError)
     async def _handle_database(request: Request, exc: SQLAlchemyError) -> JSONResponse:
+        """Connection-level trouble: genuinely transient, so 503 and a retry hint."""
         logger.exception("database_error", path=request.url.path)
         return _envelope(
             request,

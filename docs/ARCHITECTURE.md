@@ -170,7 +170,48 @@ rejected. A cache outage must not become an availability outage. `/health/*` and
 
 ---
 
-## 7. Background work
+## 7. Failure translation
+
+Every exception that reaches the edge is translated in exactly one place,
+`app/api/errors.py`, so a 404 from a router, a 409 raised by a service and a 422 from
+pydantic all produce the same envelope. The part worth arguing about is the database
+bucket:
+
+| Exception | Answer | Why |
+| --- | --- | --- |
+| `IntegrityError` | 409 `conflict` | a unique or foreign-key constraint fired; the client can fix it |
+| `ProgrammingError` | 500 `internal_error` + SQLSTATE | a relation or column the build expects is not there. Retrying cannot create a table, and a 503 would keep a broken instance in the load balancer |
+| other `SQLAlchemyError` | 503 `service_unavailable` | connection-level trouble, genuinely transient |
+
+The statement and its parameters never reach the client; the ANSI SQLSTATE does, because
+`42P01` versus `08006` is the difference between "run the migrations" and "the database is
+down" and costs nothing to return.
+
+---
+
+## 8. Probes
+
+`/health/live` answers only whether the process can serve requests, so an orchestrator
+never restarts a healthy process because a dependency is slow.
+
+`/health/ready` answers whether traffic should be routed here, and it checks three things:
+
+1. PostgreSQL answers a query;
+2. **the schema this build declares actually exists** — `information_schema` is compared
+   against `Base.metadata`;
+3. Redis answers.
+
+Step 2 is the one that earns its keep. `SELECT 1` proves a socket is open, not that the
+tables are there, and a container that starts before its migrations has run reports itself
+ready and then answers 503 to every request — the worst possible shape for a probe. The
+check costs one query and returns the names of whatever is missing.
+
+The probe never raises: a check that fails by exception surfaces as a 500 and hides the
+fact that the dependency is what is broken.
+
+---
+
+## 9. Background work
 
 Three queues, one worker:
 
@@ -191,7 +232,7 @@ task twice.
 
 ---
 
-## 8. Observability
+## 10. Observability
 
 | Signal | Mechanism | Consumer |
 | --- | --- | --- |
@@ -206,7 +247,7 @@ Labelling by the raw path would create one time series per task id.
 
 ---
 
-## 9. What is deliberately not here
+## 11. What is deliberately not here
 
 | Missing | Why |
 | --- | --- |
