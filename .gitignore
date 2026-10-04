@@ -1,0 +1,48 @@
+# ---------------------------------------------------------------- Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+
+# ---------------------------------------------------------------- tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.dmypy.json
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.cache/
+
+# ---------------------------------------------------------------- app runtime
+*.log
+logs/
+.run/
+*.db
+*.sqlite3
+.env
+.env.*
+!.env.example
+celerybeat-schedule*
+celerybeat.pid
+*.pid
+
+# ---------------------------------------------------------------- editors / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+# ---------------------------------------------------------------- working log
+# NOTES.md is a machine-specific build log (local ports, installed services); it is
+# deliberately not part of the published repository.
+NOTES.md

@@ -1,0 +1,21 @@
+# =====================================================================================
+# TaskHub — Prometheus scrape configuration.
+# =====================================================================================
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    service: taskhub-api
+    environment: local
+
+scrape_configs:
+  - job_name: taskhub-api
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["api:8000"]
+        labels:
+          container: api
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

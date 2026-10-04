@@ -1,0 +1,206 @@
+"""Task endpoints."""
+
+from __future__ import annotations
+
+import uuid
+from datetime import datetime
+from typing import Annotated
+
+from fastapi import APIRouter, Query, status
+
+from app.api.deps import CurrentUser, PaginationDep, TaskServiceDep
+from app.core.constants import TaskPriority, TaskStatus
+from app.schemas.common import ErrorResponse, Message, PaginatedResponse
+from app.schemas.tag import TagAttach, TagRead
+from app.schemas.task import TaskCreate, TaskRead, TaskUpdate
+
+router = APIRouter()
+
+ERROR_RESPONSES: dict[int | str, dict[str, object]] = {
+    401: {"model": ErrorResponse, "description": "Not authenticated"},
+    403: {"model": ErrorResponse, "description": "Not allowed to touch this task"},
+    404: {"model": ErrorResponse, "description": "Task not found"},
+    422: {"model": ErrorResponse, "description": "Payload failed validation"},
+}
+
+
+@router.post(
+    "",
+    response_model=TaskRead,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a task",
+    responses=ERROR_RESPONSES,
+)
+async def create_task(
+    payload: TaskCreate,
+    service: TaskServiceDep,
+    current_user: CurrentUser,
+) -> TaskRead:
+    """Create a task and notify the assignee through the background queue."""
+    task = await service.create(payload, actor=current_user)
+    return TaskRead.model_validate(task, from_attributes=True)
+
+
+@router.get(
+    "",
+    response_model=PaginatedResponse[TaskRead],
+    summary="List tasks",
+    responses=ERROR_RESPONSES,
+)
+async def list_tasks(
+    service: TaskServiceDep,
+    current_user: CurrentUser,
+    pagination: PaginationDep,
+    project_id: Annotated[uuid.UUID | None, Query(description="Only tasks of this project")] = None,
+    status_filter: Annotated[
+        TaskStatus | None,
+        Query(alias="status", description="Filter by status"),
+    ] = None,
+    priority: Annotated[TaskPriority | None, Query(description="Filter by priority")] = None,
+    assignee_id: Annotated[uuid.UUID | None, Query(description="Filter by assignee")] = None,
+    mine: Annotated[bool, Query(description="Only tasks assigned to me")] = False,
+    search: Annotated[
+        str | None, Query(max_length=200, description="Match title or description")
+    ] = None,
+    tag: Annotated[
+        list[uuid.UUID] | None,
+        Query(description="Repeatable: only tasks carrying every listed tag"),
+    ] = None,
+    overdue: Annotated[bool, Query(description="Only tasks past their due date")] = False,
+    due_before: Annotated[
+        datetime | None,
+        Query(description="Only tasks due at or before this moment"),
+    ] = None,
+) -> PaginatedResponse[TaskRead]:
+    """The one listing endpoint: every filter is optional and they combine with AND."""
+    items, total = await service.list_for_user(
+        user=current_user,
+        page=pagination.page,
+        size=pagination.size,
+        project_id=project_id,
+        status=status_filter,
+        priority=priority,
+        assignee_id=assignee_id,
+        search=search,
+        tag_ids=list(tag) if tag else None,
+        overdue_only=overdue,
+        due_before=due_before,
+        mine_only=mine,
+    )
+    return PaginatedResponse[TaskRead].create(
+        [TaskRead.model_validate(task, from_attributes=True) for task in items],
+        total=total,
+        page=pagination.page,
+        size=pagination.size,
+    )
+
+
+@router.get(
+    "/{task_id}",
+    response_model=TaskRead,
+    summary="Read a task",
+    responses=ERROR_RESPONSES,
+)
+async def read_task(task_id: uuid.UUID, service: TaskServiceDep, _user: CurrentUser) -> TaskRead:
+    """Task detail with tags, project and assignee already loaded."""
+    task = await service.get(task_id)
+    return TaskRead.model_validate(task, from_attributes=True)
+
+
+@router.patch(
+    "/{task_id}",
+    response_model=TaskRead,
+    summary="Update a task",
+    responses=ERROR_RESPONSES,
+)
+async def update_task(
+    task_id: uuid.UUID,
+    payload: TaskUpdate,
+    service: TaskServiceDep,
+    current_user: CurrentUser,
+) -> TaskRead:
+    """Partial update; status and priority changes are audited."""
+    task = await service.update(task_id, payload, actor=current_user)
+    return TaskRead.model_validate(task, from_attributes=True)
+
+
+@router.patch(
+    "/{task_id}/complete",
+    response_model=TaskRead,
+    summary="Mark a task as done",
+    responses=ERROR_RESPONSES,
+)
+async def complete_task(
+    task_id: uuid.UUID,
+    service: TaskServiceDep,
+    current_user: CurrentUser,
+) -> TaskRead:
+    """Shortcut for `PATCH /tasks/{id}` with `status=done`."""
+    task = await service.complete(task_id, actor=current_user)
+    return TaskRead.model_validate(task, from_attributes=True)
+
+
+@router.delete(
+    "/{task_id}",
+    response_model=Message,
+    summary="Delete a task",
+    responses=ERROR_RESPONSES,
+)
+async def delete_task(
+    task_id: uuid.UUID,
+    service: TaskServiceDep,
+    current_user: CurrentUser,
+) -> Message:
+    """Soft delete so the activity history stays intact."""
+    await service.delete(task_id, actor=current_user)
+    return Message(message="Task deleted", detail={"task_id": str(task_id)})
+
+
+@router.post(
+    "/{task_id}/tags",
+    response_model=TaskRead,
+    summary="Attach a tag to a task",
+    responses=ERROR_RESPONSES,
+)
+async def attach_tag(
+    task_id: uuid.UUID,
+    payload: TagAttach,
+    service: TaskServiceDep,
+    current_user: CurrentUser,
+) -> TaskRead:
+    """Idempotent: attaching the same tag twice is a no-op, not an error."""
+    task = await service.attach_tag(task_id, tag_id=payload.tag_id, actor=current_user)
+    return TaskRead.model_validate(task, from_attributes=True)
+
+
+@router.delete(
+    "/{task_id}/tags/{tag_id}",
+    response_model=TaskRead,
+    summary="Detach a tag from a task",
+    responses=ERROR_RESPONSES,
+)
+async def detach_tag(
+    task_id: uuid.UUID,
+    tag_id: uuid.UUID,
+    service: TaskServiceDep,
+    current_user: CurrentUser,
+) -> TaskRead:
+    """Remove one label; the task itself is untouched."""
+    task = await service.detach_tag(task_id, tag_id=tag_id, actor=current_user)
+    return TaskRead.model_validate(task, from_attributes=True)
+
+
+@router.get(
+    "/{task_id}/tags",
+    response_model=list[TagRead],
+    summary="List the tags of a task",
+    responses=ERROR_RESPONSES,
+)
+async def list_task_tags(
+    task_id: uuid.UUID,
+    service: TaskServiceDep,
+    _user: CurrentUser,
+) -> list[TagRead]:
+    """Labels currently attached to the task."""
+    task = await service.get(task_id)
+    return [TagRead.model_validate(tag, from_attributes=True) for tag in task.tags]

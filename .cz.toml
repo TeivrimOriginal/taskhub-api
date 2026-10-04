@@ -1,0 +1,41 @@
+# =====================================================================================
+# Conventional Commits — enforced by a pre-commit hook and by the release workflow.
+# =====================================================================================
+default_language_version:
+  python: python3.12
+
+name: cz_init
+
+tag_format: "$version"
+
+version_files:
+  - "pyproject.toml:^version"
+
+style:
+  - name: "feat: ..."
+    description: "A new feature for the user"
+  - name: "fix: ..."
+    description: "A bug fix"
+  - name: "refactor: ..."
+    description: "Change the code without changing behaviour"
+  - name: "perf: ..."
+    description: "A change that improves performance"
+  - name: "test: ..."
+    description: "Add or fix tests"
+  - name: "docs: ..."
+    description: "Documentation only"
+  - name: "build: ..."
+    description: "Build system or dependencies"
+  - name: "ci: ..."
+    description: "CI configuration"
+  - name: "chore: ..."
+    description: "Housekeeping that changes nothing functionally"
+  - name: "style: ..."
+    description: "Formatting only"
+
+commitizen:
+  bump_pyproject_bump_part: true
+  bump_pyproject_file_patterns:
+    - "pyproject.toml"
+
+use_shortcuts: false

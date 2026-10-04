@@ -1,0 +1,38 @@
+version: 2
+
+updates:
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - python
+    groups:
+      fastapi-stack:
+        patterns:
+          - "fastapi"
+          - "starlette"
+          - "pydantic*"
+          - "uvicorn"
+      database:
+        patterns:
+          - "sqlalchemy*"
+          - "asyncpg"
+          - "alembic"
+          - "psycopg*"
+      async-jobs:
+        patterns:
+          - "celery*"
+          - "kombu"
+          - "redis*"
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly
+    labels:
+      - dependencies
+      - github-actions
