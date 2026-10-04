@@ -1,0 +1,21 @@
+# Normalise line endings in the repository so a checkout on Windows, macOS and Linux
+# produces byte-identical files. `.editorconfig` asks for LF for the same reason; this is
+# what makes it true in the git object store rather than only in a well-behaved editor.
+* text=auto eol=lf
+
+# Shell scripts must reach the container with LF or the shebang stops working.
+*.sh text eol=lf
+Dockerfile text eol=lf
+Makefile text eol=lf
+
+# Windows-only helpers keep CRLF so cmd.exe and PowerShell 5.1 accept them.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary assets are never line-ending translated.
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff binary
+*.woff2 binary
