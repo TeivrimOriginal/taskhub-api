@@ -1,0 +1,34 @@
+# =====================================================================================
+# Gitleaks configuration.
+#
+# The defaults stay; only two known-safe literals are excluded. Both are test/CI
+# credentials that exist precisely to be fake, and both are documented as such in the
+# files themselves. Blanket rules are deliberately NOT disabled — a scanner that can be
+# switched off wholesale stops being evidence.
+# =====================================================================================
+
+title = "TaskHub gitleaks policy"
+
+[extend]
+# Use gitleaks' built-in default rules as the base.
+useDefault = true
+
+[allowlist]
+description = "Fixture credentials that are not secrets"
+paths = [
+  # Test literals: `Settings(...)` needs a long enough key, and the production guard has
+  # to be exercised with something that is obviously not a secret.
+  '''tests/.*''',
+  # CI needs a syntactically valid key to boot the app; it is created per run and never
+  # leaves the runner.
+  '''\.github/workflows/.*''',
+]
+
+regexes = [
+  '''
+    (?i)
+    (test|ci|example|fixture|placeholder|dummy|fake)[-_]?
+    (secret|password|token|key)[-_]?
+    [=:]?\s*['"]?[a-z0-9-]{16,}['"]?
+  ''',
+]

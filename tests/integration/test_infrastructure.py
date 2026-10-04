@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
@@ -12,12 +13,12 @@ from sqlalchemy import select
 
 from app.core import cache
 from app.core.celery_app import celery_app
+from app.core.constants import KEY_RATE_LIMIT
 from app.models.refresh_token import RefreshToken
 from app.models.task import Task
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-    from contextlib import AbstractAsyncContextManager as AsyncContextManager
+    from collections.abc import AsyncIterator, Callable
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -275,8 +276,21 @@ class TestRateLimiting:
         assert all(status == 200 for status in statuses)
 
 
-def _limited_client(settings: Settings, *, limit: int) -> AsyncContextManager[AsyncClient]:
-    """An ASGI client wired to an app whose rate limit is `limit` requests/window."""
+@asynccontextmanager
+async def _limited_client(settings: Settings, *, limit: int) -> AsyncIterator[AsyncClient]:
+    """An ASGI client wired to an app whose rate limit is `limit` requests/window.
+
+    The limiter buckets on the caller address and keeps that bucket in Redis, which outlives
+    both a test and a whole `pytest` process. Two defences, because a shared bucket is the
+    difference between a green suite and a `429` on the very first request:
+
+    * a fresh address per call, drawn at random, so nothing else is holding that bucket;
+    * the keys for that address are dropped before the requests, so a rerun inside the same
+      60-second window does not inherit counters a previous run already spent.
+
+    Sharing `127.0.0.1` — the httpx default — is what made this fail in CI and nowhere else.
+    """
+    from app.core.cache import invalidate_pattern
     from app.core.config import Environment
     from app.main import create_app
 
@@ -290,7 +304,12 @@ def _limited_client(settings: Settings, *, limit: int) -> AsyncContextManager[As
             }
         )
     )
-    return AsyncClient(
+
+    client_ip = f"198.51.100.{uuid.uuid4().int % 254 + 1}"
+    await invalidate_pattern(f"{KEY_RATE_LIMIT}:{client_ip}*")
+    async with AsyncClient(
         transport=ASGITransport(app=app),
         base_url="http://testserver",
-    )
+        headers={"X-Forwarded-For": client_ip},
+    ) as http:
+        yield http

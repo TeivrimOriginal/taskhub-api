@@ -10,6 +10,14 @@ updates:
     labels:
       - dependencies
       - python
+    ignore:
+      # `pydantic` pins `pydantic-core` exactly, so the two can never be upgraded
+      # independently. Left alone, Dependabot opens a pull request for every
+      # `pydantic-core` release that the installed `pydantic` does not accept — pip then
+      # reports the result as a dependency conflict, which is a broken environment wearing
+      # a green check. Bumping pydantic pulls its core along with it.
+      - dependency-name: "pydantic-core"
+        update-types: ["version-update:semver-minor", "version-update:semver-patch"]
     groups:
       fastapi-stack:
         patterns:
