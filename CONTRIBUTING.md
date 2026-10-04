@@ -29,7 +29,7 @@ uvicorn app.main:app --reload
 ## Before you push
 
 ```bash
-make verify        # lint + mypy --strict + tests + migration drift check
+make verify        # lint + mypy --strict + tests + coverage gate + migration drift check
 ```
 
 That is exactly what CI runs, so a green local `make verify` means a green pipeline.
@@ -71,7 +71,8 @@ better than `# type: ignore` — an ignore hides the next real error too.
 ## Tests
 
 ```bash
-make test              # everything, with the 85% coverage gate
+make test              # everything; prints the coverage report, enforces no gate
+make gate              # everything + the 85% coverage gate (needs Python >= 3.14)
 make test-unit         # no database required, ~1.5 s
 make test-integration   # real PostgreSQL
 ```
@@ -81,6 +82,24 @@ make test-integration   # real PostgreSQL
   on the response envelope, not on internal objects.
 * Tests requiring Redis are skipped automatically when no server is reachable, so the
   suite is green on a bare laptop and stricter in CI.
+* Anything that shares Redis across tests has to give itself a private key. The rate
+  limiter buckets on `ratelimit:<client>:<window>`, and that bucket survives both a test
+  and a whole `pytest` process — see `_limited_client()` in
+  `tests/integration/test_infrastructure.py` for how the limiter tests stay hermetic.
+
+### Why the gate only runs on Python 3.14
+
+`coverage.py` picks its tracer per interpreter, and on this code base the two options
+disagree by seven points on identical tests. The C tracer implements `sys.settrace` and
+loses the statement after every `await`, because SQLAlchemy resumes those coroutines from
+a greenlet and the tracer's frame bookkeeping does not survive the switch. PEP 669
+`sys.monitoring` measures it correctly, but its branch events only exist on 3.14 — and
+this project measures branches.
+
+So `make gate` pins `COVERAGE_CORE=sysmon` and needs 3.14, and CI splits the same way:
+`Tests (3.12 / 3.13)` runs `pytest --no-cov`, `Coverage gate` runs the suite once under the
+tracer that can be trusted. On 3.12 or 3.13 `make test` still prints a report; do not read
+a percentage off it.
 
 ## Commit messages
 

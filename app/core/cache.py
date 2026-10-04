@@ -20,7 +20,7 @@ from app.core.logging import get_logger
 
 logger = get_logger(__name__)
 
-_client: aioredis.Redis[str] | None = None
+_client: aioredis.Redis | None = None
 
 #: How long to keep talking to Redis after it failed. Without this circuit breaker every
 #: request would pay the full `socket_connect_timeout` while Redis is down.
@@ -40,12 +40,14 @@ def is_available() -> bool:
     return time.monotonic() >= _unavailable_until
 
 
-def get_redis(settings: Settings | None = None) -> aioredis.Redis[str]:
+def get_redis(settings: Settings | None = None) -> aioredis.Redis:
     """Return the process-wide Redis client (lazy, reused across requests)."""
     global _client  # noqa: PLW0603
     if _client is None:
         resolved = settings or get_settings()
-        _client = aioredis.from_url(
+        # `redis.asyncio.from_url` ships without annotations; the ignore is scoped to
+        # that one call rather than loosening the module.
+        _client = aioredis.from_url(  # type: ignore[no-untyped-call]
             resolved.redis_url,
             encoding="utf-8",
             decode_responses=True,

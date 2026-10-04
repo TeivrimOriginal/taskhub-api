@@ -74,6 +74,10 @@ migration-check: ## Fail if the models drifted away from the migrations
 downgrade: ## Roll back one migration (rev=0002)
 	alembic downgrade $(or $(rev),-1)
 
+.PHONY: migration-verify
+migration-verify: ## Upgrade/downgrade the database and diff it against the models (DESTRUCTIVE)
+	$(PY) scripts/verify_migrations.py
+
 .PHONY: seed
 seed: ## Create the admin account and a demo data set
 	$(PY) -m app.cli create-admin
@@ -81,16 +85,24 @@ seed: ## Create the admin account and a demo data set
 
 # ----------------------------------------------------------------------- tests
 .PHONY: test
-test: ## Run the whole suite with the coverage gate
+test: ## Run the whole suite (reports coverage, enforces no gate)
 	$(PY) -m pytest
 
 .PHONY: test-unit
 test-unit: ## Fast tests that need no database
-	$(PY) -m pytest -m unit -q
+	$(PY) -m pytest -m unit -q --no-cov
 
 .PHONY: test-integration
 test-integration: ## Tests that touch PostgreSQL
-	$(PY) -m pytest -m integration -q
+	$(PY) -m pytest -m integration -q --no-cov
+
+# The coverage number is only trustworthy under PEP 669 `sys.monitoring`; the C tracer
+# loses the statement after every `await` in this code base. `sysmon` cannot measure
+# branches before Python 3.14, so the gate runs there and nowhere else. See
+# `[tool.coverage.run]` in pyproject.toml for the measurement.
+.PHONY: gate
+gate: ## Run the suite and fail below the 85% coverage gate (needs Python >= 3.14)
+	COVERAGE_CORE=sysmon $(PY) -m pytest --cov-fail-under=85 --cov-report=term-missing
 
 .PHONY: coverage
 coverage: ## Open the HTML coverage report
@@ -147,5 +159,5 @@ clean: ## Remove caches and build artefacts
 	find . -type d -name __pycache__ -prune -exec rm -rf {} +
 
 .PHONY: verify
-verify: lint typecheck test migration-check ## Everything CI checks, in one command
-	@echo "OK: lint, types, tests and migration state all pass"
+verify: lint typecheck gate migration-check ## Everything CI checks, in one command
+	@echo "OK: lint, types, tests, the coverage gate and migration state all pass"

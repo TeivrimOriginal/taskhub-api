@@ -15,6 +15,37 @@
 
 ---
 
+## What was actually run
+
+Every number below is copy-pasted from a real run, not estimated. Python 3.14.6,
+PostgreSQL 17.4 on `127.0.0.1:5434`, Redis reachable on `127.0.0.1:6379`:
+
+```
+pytest                         → 280 passed, 1 skipped in 37.84s
+coverage (branch=True)         → TOTAL 4441 stmts, 314 miss, 398 branch, 82 partial, 91.11%
+                                 gate is 85% — reached
+ruff check .                   → All checks passed!
+ruff format --check .          → 95 files already formatted
+mypy                           → Success: no issues found in 87 source files
+alembic upgrade head           → 8 tables (identical to Base.metadata), 21 indexes
+                                 citext installed; users.email udt_name = citext
+alembic downgrade base         → no application tables left
+smoke.py against live uvicorn  → 67 passed / 0 failed
+```
+
+`make migration-verify` runs the schema comparison end to end and rolls everything back
+again. The suite stays green on a bare machine with no Redis — the Redis-only tests skip —
+and gets stricter in CI, where `redis:7` and `postgres:16` are service containers.
+
+**What is _not_ verified here:** the machine this was last run on has no Docker, so
+`Dockerfile`, `docker-compose.yml` and `scripts/smoke.py` have never been executed locally
+against a live container stack. CI covers them instead — the `Docker image` job builds the
+production image and asserts it is non-root with a healthcheck, `Compose config` validates
+the compose file — but "docker compose up gives you a working system" is still a claim this
+repository has not proven end to end. It is the first thing to run on a machine with Docker.
+
+---
+
 ## Table of contents
 
 - [Why this project](#why-this-project)
@@ -175,7 +206,7 @@ docker compose up --build -d  # api, worker, beat, postgres, redis, nginx, mailp
 | Nginx (prod-like) | <http://localhost> | gzip, security headers, request logging |
 | Mailpit | <http://localhost:8025> | every e-mail the app "sends" lands here |
 | Metrics | <http://localhost:8000/metrics> | Prometheus exposition format |
-| Readiness | <http://localhost:8000/health/ready> | 503 when a dependency is down |
+| Readiness | <http://localhost:8000/health/ready> | 503 when a dependency is down or the schema is wrong |
 
 The API exposes **28 paths / 43 operations**, documented in full at `/docs`.
 
@@ -239,7 +270,7 @@ make down          # stop containers
 make logs          # tail api logs
 make migrate       # alembic upgrade head
 make makemigration # autogenerate a revision
-make test          # pytest with coverage (needs postgres + redis)
+make test          # pytest, prints the coverage report (needs postgres + redis)
 make lint          # ruff check + ruff format --check
 make format        # ruff check --fix + ruff format
 make typecheck     # mypy --strict
@@ -253,7 +284,7 @@ make shell         # psql inside the container
 
 ```
 GET    /health/live                      liveness probe (no dependencies touched)
-GET    /health/ready                     readiness: checks DB + Redis
+GET    /health/ready                     readiness: DB, schema and Redis
 GET    /metrics                          Prometheus metrics
 
 POST   /api/v1/auth/register             create account, returns tokens
@@ -425,8 +456,10 @@ taskhub-api/
 │   ├── unit/                    # no database
 │   ├── integration/             # real PostgreSQL (+ Redis when available)
 │   └── conftest.py              # fixtures: db, client, users, tokens
-├── scripts/smoke.py             # 67 assertions against a *running* server
-├── .github/workflows/           # ci.yml (7 jobs), release.yml
+├── scripts/
+│   ├── smoke.py                   # 67 assertions against a *running* server
+│   └── verify_migrations.py       # upgrade → diff vs models → downgrade (destructive)
+├── .github/workflows/           # ci.yml (8 jobs), release.yml
 ├── .github/dependabot.yml
 ├── .pre-commit-config.yaml
 ├── .cz.toml                     # conventional commits
@@ -543,17 +576,18 @@ ever disagree.
 ## Testing
 
 ```bash
-make test             # whole suite, 85% coverage gate (measured: 89.7%)
+make test             # whole suite; prints the coverage report, enforces no gate
+make gate             # whole suite + the 85% gate (needs Python >= 3.14, see below)
 pytest -m unit        # fast, no database — ~1.5 s
 pytest -m integration -k task
 make smoke            # 67 assertions against a *running* server
 ```
 
-Measured on this machine (Python 3.14, PostgreSQL 17):
+Measured on this machine (Python 3.14, PostgreSQL 17, Redis up):
 
 ```
-254 passed, 5 skipped in 32.31s
-TOTAL   4247 stmts   355 miss   394 branch   83 partial   89.74%
+280 passed, 1 skipped in 37.84s
+TOTAL   4441 stmts   314 miss   398 branch   82 partial   91.11%
 Required test coverage of 85% reached.
 ```
 
@@ -574,8 +608,40 @@ Highlights:
   identity, `asyncpg`-backed isolation rather than mocks;
 - every test asserts on the response envelope, not on internal objects.
 
-The five skips are the Redis-only tests: they are skipped when no Redis answers, so the
-suite is green on a bare laptop and stricter in CI where `redis:7` is a service.
+The single skip is the test that only makes sense without Redis (it asserts the
+degraded path). With no Redis at all the suite skips five cache-specific tests instead, so
+it is green on a bare laptop and stricter in CI where `redis:7` is a service.
+
+### Why the coverage gate only runs on one Python version
+
+A coverage gate is only worth having if the number behind it is real. On this code base the
+two tracers `coverage.py` can choose between disagree by seven points, on the same 280
+tests:
+
+| Core | Result | `app/services/task.py` |
+| --- | --- | --- |
+| `sys.settrace` (C tracer, the default ≤ 3.13) | 84.12% | 56.84% |
+| PEP 669 `sys.monitoring` (`sysmon`, the default on 3.14) | **91.11%** | 90.17% |
+
+The cause is specific and worth stating precisely: **the C tracer drops the statement that
+follows every `await`.** In `app/api/v1/routers/tags.py` it records line 34
+(`tag = await service.create(...)`) and misses line 35 (`return TagRead.model_validate(...)`).
+SQLAlchemy's async layer resumes those coroutines from a greenlet, and the tracer's
+per-thread frame bookkeeping does not survive the switch. The result is nonsense on its face —
+`tests/integration/test_tasks.py` at 100% while the service it exercises reads as 57% — and it
+only shows up on an interpreter whose default core is the C one.
+
+`sysmon` measures it correctly, but its `BRANCH_LEFT`/`BRANCH_RIGHT` events only exist on
+Python 3.14, and this project measures branches. So the CI is split:
+
+- `Tests (Python 3.12 / 3.13)` runs `pytest --no-cov` and answers only "does the code pass on
+  every supported interpreter?";
+- `Coverage gate` runs the same suite once on 3.14 with `COVERAGE_CORE=sysmon`, and a
+  follow-up step re-reads `coverage debug config` to prove the tracer was the one asked for —
+  a gate that quietly measures the wrong tracer is worse than no gate.
+
+`make gate` does the same locally. If you are on Python 3.13 and want the number, `make test`
+still prints the report; just do not trust it.
 
 ---
 
@@ -587,29 +653,33 @@ suite is green on a bare laptop and stricter in CI where `redis:7` is a service.
 | ruff format | Black-compatible formatter | applied |
 | mypy | `strict = true`, `warn_unreachable` | **0 errors, 85 files** |
 | pre-commit | ruff, ruff-format, mypy, gitleaks, commitizen | configured |
-| pytest | `branch = true`, `--cov-fail-under=85` | gate |
+| pytest | `branch = true`, gate at 85% on Python 3.14 | gate |
 | gitleaks | secret scan on every push | CI |
 
 ```
 $ make verify
-lint       → All checks passed!
-types      → Success: no issues found in 85 source files
-tests      → 254 passed, 5 skipped
-migrations → No new upgrade operations detected.
-OK: lint, types, tests and migration state all pass
+lint        → All checks passed!
+types       → Success: no issues found in 87 source files
+gate        → 280 passed, 1 skipped; TOTAL 4441 stmts 314 miss 91.11%
+              Required test coverage of 85% reached.
+migrations  → No new upgrade operations detected.
+OK: lint, types, tests, the coverage gate and migration state all pass
 ```
 
-CI (`.github/workflows/ci.yml`) runs seven jobs, each named after what it checks:
+CI (`.github/workflows/ci.yml`) runs eight jobs, each named after what it checks:
 
 1. `lint` — ruff check + format check
 2. `types` — mypy strict
 3. `secrets` — gitleaks
-4. `test` — matrix on Python 3.12 / 3.13 with `postgres:16` + `redis:7` services
-5. `migrations` — upgrade → downgrade to base → upgrade, then `alembic check` plus an
+4. `test` — matrix on Python 3.12 / 3.13 with `postgres:16` + `redis:7` services, run with
+   `--no-cov`: it answers "does the code pass on every supported interpreter?"
+5. `coverage` — the same suite once on 3.14 under `COVERAGE_CORE=sysmon`, enforcing the 85%
+   gate, plus a step that verifies the tracer really is the accurate one
+6. `migrations` — upgrade → downgrade to base → upgrade, then `alembic check` plus an
    autogenerate drift check
-6. `docker` — builds the production image and asserts it declares a `HEALTHCHECK`, does
+7. `docker` — builds the production image and asserts it declares a `HEALTHCHECK`, does
    **not** run as root, and can import the application
-7. `compose` — `docker compose config` must be valid
+8. `compose` — `docker compose config` must be valid
 ---
 
 ## Observability
@@ -618,7 +688,8 @@ CI (`.github/workflows/ci.yml`) runs seven jobs, each named after what it checks
   carries `request_id`, `method`, `path`, `status`, `duration_ms`, `user_id`;
 - **Metrics** — `http_requests_total`, `http_request_duration_seconds` (histogram),
   `db_query_duration_seconds`, `celery_task_duration_seconds`, `auth_failures_total`;
-- **Health** — `/health/live` (process is up), `/health/ready` (DB + Redis reachable);
+- **Health** — `/health/live` (process is up), `/health/ready` (PostgreSQL answers, its
+  schema matches this build, Redis answers);
 - **Tracing/errors** — optional Sentry DSN; every unhandled exception is reported with
   the request context, while the client gets a generic message.
 
@@ -638,6 +709,9 @@ CI (`.github/workflows/ci.yml`) runs seven jobs, each named after what it checks
 | 8 | Celery for anything slow | `BackgroundTasks` | retries, scheduling, separate failure domain; `BackgroundTasks` dies with the request |
 | 9 | `pydantic-settings` | `os.environ` + manual parsing | validated configuration that fails fast at startup |
 | 10 | Alembic only, no `create_all` in prod | runtime `create_all` | schema changes must be reviewable, reversible and reproducible |
+| 11 | Readiness verifies the *schema*, not just the socket | `SELECT 1` | a container that started before its migrations answers `SELECT 1` happily and then 503s every request; the probe has to keep that instance out of rotation |
+| 12 | A `ProgrammingError` is a 500, not a 503 | one bucket for every SQLAlchemy error | "relation does not exist" is not transient — answering "please retry" is a lie that keeps a broken instance in the load balancer |
+| 13 | The coverage gate runs on one interpreter, with the tracer pinned | gate on every matrix entry | `sys.settrace` loses every line after an `await` here; a gate on the wrong tracer is worse than no gate |
 
 ---
 

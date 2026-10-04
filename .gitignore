@@ -22,6 +22,11 @@ env/
 coverage.xml
 htmlcov/
 .cache/
+# Scratch dumps from ad-hoc coverage / lint comparisons. The report that matters is
+# produced by `make verify` and uploaded as a CI artifact, never committed as text.
+cov_*.txt
+mypy.log
+ruff.log
 
 # ---------------------------------------------------------------- app runtime
 *.log
