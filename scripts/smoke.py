@@ -79,9 +79,115 @@ def section(title: str) -> None:
     print(f"\n=== {title} ===")
 
 
+def addressed_to(recipient: str, message: dict[str, Any]) -> bool:
+    """`True` if any `To:` header of a Mailpit message is addressed to `recipient`.
+
+    Mailpit returns one entry per recipient, each with a display `Name` and the address in
+    `Value`. The address is also accepted in the RFC 5322 `Display Name <addr>` form, because
+    a stub or a different mail UI may hand back the raw header instead.
+    """
+    wanted = recipient.strip().lower()
+    for header in message.get("To", []):
+        address = str(header.get("Value", "")).strip().lower()
+        if "<" in address:
+            address = address.rsplit("<", 1)[-1]
+        address = address.rstrip(">").strip()
+        if address == wanted:
+            return True
+    return False
+
+
+def wait_for_mail(mailpit_url: str, recipient: str, *, timeout: float) -> dict[str, Any] | None:
+    """Poll a Mailpit inbox until a message for `recipient` shows up.
+
+    Mailpit's API is polled rather than a webhook because the delivery path is exactly what
+    is being tested: API -> database -> Celery -> SMTP -> inbox. The worker is asynchronous,
+    so this has to wait rather than assert immediately.
+    """
+    deadline = time.monotonic() + timeout
+    inbox = httpx.Client(base_url=mailpit_url.rstrip("/"), timeout=10.0)
+    try:
+        while time.monotonic() < deadline:
+            try:
+                response = inbox.get("/api/v1/messages", params={"limit": 50})
+                if response.status_code == 200:
+                    for message in response.json().get("messages", []):
+                        if addressed_to(recipient, message):
+                            return message
+            except httpx.HTTPError:
+                # The sink may not be up yet, or may go away mid-run. Keep trying until the
+                # deadline rather than failing the whole script on a transport error.
+                pass
+            time.sleep(1.0)
+    finally:
+        inbox.close()
+    return None
+
+
+def check_background_work(
+    creator: Client,
+    assignee: Client,
+    project_id: Any,
+    recipient: str,
+    *,
+    mailpit_url: str | None,
+    mail_timeout: float,
+) -> None:
+    """Assign a task, then — if a mail sink was named — wait for the worker's e-mail.
+
+    Opt-in because it is the only part of this script that needs more than a running API: a
+    live Celery worker and somewhere for SMTP to deliver. `--mailpit-url` is what the
+    compose stack provides, so the CI job that brings the stack up is the only place these
+    two assertions run. Everywhere else they would be theatre.
+    """
+    section("background work")
+    if not mailpit_url:
+        print("  SKIP  e-mail delivery (pass --mailpit-url to check the worker and SMTP)")
+        return
+
+    # `/auth/register` answers with a token pair, not the user, so the id comes from
+    # `/auth/me`.
+    assignee_id = assignee.get("/api/v1/auth/me").json().get("id")
+    assigned = creator.post(
+        "/api/v1/tasks",
+        json={
+            "project_id": project_id,
+            "title": "Please look at this",
+            "assignee_id": assignee_id,
+        },
+    )
+    check("POST /tasks with assignee_id -> 201", assigned.status_code == 201, assigned.text[:200])
+
+    message = wait_for_mail(mailpit_url, recipient, timeout=mail_timeout)
+    check(
+        "the Celery worker e-mailed the assignee",
+        message is not None,
+        f"nothing addressed to {recipient} within {mail_timeout:g}s",
+    )
+    if message is not None:
+        check(
+            "the e-mail carries the task title",
+            "Please look at this" in json.dumps(message),
+            str(message)[:200],
+        )
+
+
 def main() -> int:  # noqa: PLR0915 — a linear script reads better than helpers here
     parser = argparse.ArgumentParser(description="TaskHub smoke test")
     parser.add_argument("--base-url", default="http://127.0.0.1:8000")
+    parser.add_argument(
+        "--mailpit-url",
+        default=None,
+        help="Mailpit base URL. Given, the script also asserts that assigning a task to "
+        "another user produces an e-mail, which is the only check that proves the Celery "
+        "worker and the SMTP path are really wired up.",
+    )
+    parser.add_argument(
+        "--mail-timeout",
+        type=float,
+        default=60.0,
+        help="How long to wait for the worker's e-mail (default: 60s)",
+    )
     args = parser.parse_args()
     base_url = args.base_url
 
@@ -467,6 +573,15 @@ def main() -> int:  # noqa: PLR0915 — a linear script reads better than helper
         "rate limit headers are present (or the limiter is degraded)",
         "x-ratelimit-limit" in rate_headers or True,
         str(dict(rate_headers))[:200],
+    )
+
+    check_background_work(
+        fresh,
+        other,
+        project_id,
+        other_email,
+        mailpit_url=args.mailpit_url,
+        mail_timeout=args.mail_timeout,
     )
 
     section("summary")

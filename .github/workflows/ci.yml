@@ -384,6 +384,95 @@ jobs:
         run: |
           docker run --rm --entrypoint python taskhub-api:ci -c "import app.main; print('imports ok')"
 
+  # ------------------------------------------------------------------------ full stack
+  stack:
+    name: Compose stack (end to end)
+    runs-on: ubuntu-latest
+    needs: [lint, docker]
+    # The claim "docker compose up gives you a working system" is the one thing this
+    # repository could not verify for a long time: the machine it was written on has no
+    # container runtime and no nested virtualisation. GitHub Actions runners do, so the
+    # proof lives here instead of in a README footnote.
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install the smoke test's only dependency
+        # scripts/smoke.py is an HTTP client against a running server; it does not need the
+        # application installed, only httpx.
+        run: pip install httpx
+
+      - name: Bring the stack up
+        run: docker compose up -d --build --wait --wait-timeout 420
+
+      - name: The migration container must have succeeded
+        # `migrate` is a one-shot service. If it failed, every later service is starting
+        # against a schema that does not exist, and `--wait` would still pass for them.
+        run: |
+          state="$(docker inspect --format '{{.State.Status}} {{.State.ExitCode}}' \
+            "$(docker compose ps -q migrate)")"
+          echo "migrate: $state"
+          test "$state" = "exited 0" || {
+            echo "::error::the migrate service did not exit 0"
+            docker compose logs migrate
+            exit 1
+          }
+
+      - name: The API must report itself ready
+        run: |
+          for attempt in $(seq 1 60); do
+            body="$(curl -fsS http://127.0.0.1:8000/health/ready || true)"
+            echo "attempt $attempt: $body"
+            if echo "$body" | grep -q '"status":"ready"'; then
+              # The schema check matters most here: this is a database that was created
+              # empty a minute ago and brought up to date by the entrypoint.
+              echo "$body" | grep -q '"schema":true' || {
+                echo "::error::readiness does not report the schema as present"
+                exit 1
+              }
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::the stack never became ready"
+          docker compose logs api
+          exit 1
+
+      - name: The worker must have joined its queue
+        # The API being healthy says nothing about the background half of the stack.
+        run: |
+          for attempt in $(seq 1 30); do
+            if docker compose exec -T worker \
+              celery -A app.core.celery_app:celery_app inspect ping -d "celery@$HOSTNAME" \
+              >/dev/null 2>&1; then
+              echo "the worker answered ping"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::the Celery worker never answered a ping"
+          docker compose logs worker
+          exit 1
+
+      - name: Drive the running stack
+        # 67 assertions over HTTP plus two more that need the worker and the mail sink:
+        # assigning a task must produce an e-mail addressed to the assignee.
+        run: python scripts/smoke.py --base-url http://127.0.0.1:8000 --mailpit-url http://127.0.0.1:8025
+
+      - name: Diagnostics
+        if: failure()
+        run: |
+          docker compose ps --all
+          docker compose logs --no-color --tail 300
+
+      - name: Tear down
+        if: always()
+        run: docker compose down --volumes --remove-orphans --timeout 30
+
   # ------------------------------------------------------------------- compose file
   compose:
     name: Compose config
