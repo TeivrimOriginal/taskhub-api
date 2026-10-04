@@ -89,7 +89,6 @@ addopts = [
     "--cov-report=term-missing:skip-covered",
     "--cov-report=html",
     "--cov-report=xml",
-    "--cov-fail-under=85",
 ]
 asyncio_mode = "auto"
 # One event loop for the whole session: the async engine is a process-wide singleton, so a
@@ -110,15 +109,16 @@ filterwarnings = ["error", "ignore::DeprecationWarning:celery.*"]
 branch = true
 source = ["app"]
 omit = ["app/cli.py", "app/workers/celery_app.py"]
-# Pin the tracing core instead of taking coverage.py's per-interpreter default.
+# No `core` here on purpose. coverage.py's default differs per interpreter, and the two
+# cores do not agree on this code base: the C tracer (`settrace`) drops the statement that
+# follows every `await`, because SQLAlchemy's async layer resumes those coroutines from a
+# greenlet and the tracer's frame bookkeeping does not survive the switch. Measured on the
+# same tests: CTracer 84.1%, `sys.monitoring` 91.1%.
 #
-# The C tracer (`ctrace`, still the default up to Python 3.13) silently drops hits on this
-# code base: it loses whole service bodies and the closing `return` of every endpoint,
-# reporting 82.9% where the truth is 89.8%. `sysmon` uses PEP 669 `sys.monitoring`, is what
-# Python 3.14 gets by default, measures the same 89.8%, and is the faster of the two here
-# (34s vs 44s for the suite). Pinning it keeps the number identical on every interpreter,
-# which is the only way `--cov-fail-under` means anything.
-core = "sysmon"
+# `sysmon` is the accurate core, but its branch events only exist on Python 3.14+, and this
+# project measures branches. So the gate runs where the number is real — see the `gate`
+# target in the Makefile and the `Coverage gate` job in CI, which pin `COVERAGE_CORE=sysmon`
+# on 3.14. Everywhere else `--no-cov` is used and the suite only has to pass.
 
 [tool.coverage.report]
 precision = 2
