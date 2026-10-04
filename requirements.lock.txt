@@ -75,7 +75,7 @@ python-discovery==1.6.1
 python-dotenv==1.2.4
 python-multipart==0.0.32
 PyYAML==6.0.3
-redis==6.4.0
+redis==8.1.0
 ruff==0.16.10
 six==1.17.0
 SQLAlchemy==2.1.3
