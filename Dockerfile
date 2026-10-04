@@ -24,11 +24,11 @@ RUN apt-get update \
 
 WORKDIR /build
 
-# Dependencies first: this layer is cached until pyproject/requirements change.
+# Dependencies first: this layer stays cached until requirements.lock.txt changes.
 COPY requirements.lock.txt ./
 RUN python -m venv /opt/venv \
     && /opt/venv/bin/pip install --upgrade pip \
-    && /opt/venv/bin/pip install --require-hashes=false -r requirements.lock.txt
+    && /opt/venv/bin/pip install -r requirements.lock.txt
 
 # --------------------------------------------------------------------------- runtime
 FROM python:3.12-slim-bookworm AS runtime
