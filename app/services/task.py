@@ -8,22 +8,22 @@ from enum import Enum
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.cache import invalidate_pattern, make_key
+from app.core.cache import invalidate_entities
 from app.core.constants import (
     MAX_BULK_TAGS,
     QUEUE_NOTIFICATIONS,
     ActivityAction,
-    TaskPriority,
+    CacheEntity,
     TaskStatus,
 )
 from app.core.errors import (
-    PermissionDeniedError,
     TagLimitExceededError,
     TagNotFoundError,
     TaskNotFoundError,
     ValidationError,
 )
 from app.core.logging import get_logger
+from app.core.permissions import assert_write_task, listing_owner_id
 from app.models.activity_log import ActivityLog
 from app.models.project import Project
 from app.models.tag import Tag
@@ -83,27 +83,23 @@ class TaskService:
         user: User,
         page: int,
         size: int,
-        project_id: uuid.UUID | None = None,
-        status: TaskStatus | None = None,
-        priority: TaskPriority | None = None,
-        assignee_id: uuid.UUID | None = None,
-        search: str | None = None,
-        tag_ids: list[uuid.UUID] | None = None,
-        overdue_only: bool = False,
-        due_before: datetime | None = None,
         mine_only: bool = False,
+        **filters: object,
     ) -> tuple[list[Task], int]:
-        """List tasks with the visibility rule applied once, here."""
+        """List the tasks `user` may see.
+
+        The filters arrive as keywords from `FilterSet.to_repository()`, so this method
+        does not repeat their names. Two rules are applied here and nowhere else:
+
+        * `listing_owner_id()` limits a normal user to their own projects; staff see all.
+        * `?mine=true` replaces the assignee filter with the caller's own id, so a client
+          cannot ask for another person's task list through that flag.
+        """
+        if mine_only:
+            filters["assignee_id"] = user.id
         stmt = self.tasks.make_listing(
-            project_id=project_id,
-            owner_id=None if user.is_staff else user.id,
-            assignee_id=user.id if mine_only else assignee_id,
-            status=status,
-            priority=priority,
-            search=search,
-            tag_ids=tag_ids,
-            overdue_only=overdue_only,
-            due_before=due_before,
+            owner_id=listing_owner_id(user),
+            **filters,  # type: ignore[arg-type]
         )
         return await self.tasks.paginate(stmt, page=page, size=size)
 
@@ -113,17 +109,14 @@ class TaskService:
         project: Project,
         page: int,
         size: int,
-        status: TaskStatus | None = None,
-        search: str | None = None,
-        tag_ids: list[uuid.UUID] | None = None,
+        **filters: object,
     ) -> tuple[list[Task], int]:
-        """Tasks inside one project, after the visibility check has passed."""
-        stmt = self.tasks.make_listing(
-            project_id=project.id,
-            status=status,
-            search=search,
-            tag_ids=tag_ids,
-        )
+        """Tasks inside one project, after the visibility check has passed.
+
+        Same mechanism as `list_for_user`; the project is fixed, so it is passed as a
+        filter and cannot be overridden by the query string.
+        """
+        stmt = self.tasks.make_listing(project_id=project.id, **filters)  # type: ignore[arg-type]
         return await self.tasks.paginate(stmt, page=page, size=size)
 
     # ------------------------------------------------------------------ create
@@ -132,7 +125,8 @@ class TaskService:
         project = await self.projects.get_alive(payload.project_id)
         if project is None:
             raise TaskNotFoundError(details={"project_id": str(payload.project_id)})
-        self._assert_may_write(project, actor)
+        # No `task` yet: this is the "create" rule, so only the project matters here.
+        assert_write_task(actor, project)
 
         tags = await self._resolve_tags(payload.tag_ids)
         task = Task(
@@ -159,7 +153,7 @@ class TaskService:
         )
         await self.projects.recalculate_counters(project.id)
         await self.session.commit()
-        await self._invalidate(project.owner_id)
+        await invalidate_entities(CacheEntity.TASK)
 
         logger.info(
             "task_created",
@@ -176,7 +170,7 @@ class TaskService:
         """Partial update, including the status/priority side effects."""
         task = await self.get(task_id)
         project = await self._require_project(task.project_id)
-        self._assert_may_write(project, actor)
+        assert_write_task(actor, project, task)
 
         values = payload.model_dump(exclude_unset=True)
         if not values:
@@ -207,7 +201,7 @@ class TaskService:
 
         await self.projects.recalculate_counters(project.id)
         await self.session.commit()
-        await self._invalidate(project.owner_id)
+        await invalidate_entities(CacheEntity.TASK)
         logger.info(
             "task_updated",
             task_id=str(task.id),
@@ -226,14 +220,14 @@ class TaskService:
         """Soft-delete a task so the history stays auditable."""
         task = await self.get(task_id)
         project = await self._require_project(task.project_id)
-        self._assert_may_write(project, actor)
+        assert_write_task(actor, project, task)
 
         task.deleted_at = datetime.now(UTC)
         await self.tasks.insert(task, flush=False)
         await self.log_activity(task, actor, ActivityAction.TASK_DELETED)
         await self.projects.recalculate_counters(project.id)
         await self.session.commit()
-        await self._invalidate(project.owner_id)
+        await invalidate_entities(CacheEntity.TASK)
         logger.info("task_deleted", task_id=str(task_id), actor=str(actor.id))
 
     # --------------------------------------------------------------------- tags
@@ -241,7 +235,7 @@ class TaskService:
         """Attach an existing tag, enforcing the per-task limit."""
         task = await self.get(task_id)
         project = await self._require_project(task.project_id)
-        self._assert_may_write(project, actor)
+        assert_write_task(actor, project, task)
 
         tag = await self.tags.get(tag_id)
         if tag is None:
@@ -252,7 +246,7 @@ class TaskService:
         added = await self.tasks.attach_tag(task, tag)
         if added:
             await self.session.commit()
-            await self._invalidate(project.owner_id)
+            await invalidate_entities(CacheEntity.TASK)
             logger.info("tag_attached", task_id=str(task_id), tag=str(tag.name))
         return await self._reload(task.id)
 
@@ -260,11 +254,11 @@ class TaskService:
         """Remove a tag from a task."""
         task = await self.get(task_id)
         project = await self._require_project(task.project_id)
-        self._assert_may_write(project, actor)
+        assert_write_task(actor, project, task)
 
         if await self.tasks.detach_tag(task, tag_id):
             await self.session.commit()
-            await self._invalidate(project.owner_id)
+            await invalidate_entities(CacheEntity.TASK)
             logger.info("tag_detached", task_id=str(task_id), tag_id=str(tag_id))
         return await self._reload(task.id)
 
@@ -355,18 +349,12 @@ class TaskService:
             )
 
     @staticmethod
-    def _assert_may_write(project: Project, actor: User) -> None:
-        allowed = (
-            project.owner_id == actor.id
-            or actor.is_superuser
-            or actor.role.value in {"admin", "moderator"}
-        )
-        if not allowed:
-            raise PermissionDeniedError("You may only change tasks in your own projects")
-
-    @staticmethod
     async def _schedule_assignment_email(task: Task) -> None:
-        """Ask the worker to notify the assignee; never raises."""
+        """Ask the worker to notify the assignee; never raises.
+
+        A dead broker must not fail a write that already succeeded, so the error is
+        logged and the request continues.
+        """
         if task.assignee_id is None:
             return
         await enqueue(
@@ -374,9 +362,3 @@ class TaskService:
             str(task.id),
             queue=QUEUE_NOTIFICATIONS,
         )
-
-    @staticmethod
-    async def _invalidate(owner_id: uuid.UUID) -> None:
-        await invalidate_pattern(f"{make_key('stats')}*")
-        await invalidate_pattern(f"{make_key('project')}*")
-        logger.debug("task_cache_invalidated", owner_id=str(owner_id))

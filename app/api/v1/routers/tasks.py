@@ -1,27 +1,27 @@
-"""Task endpoints."""
+"""Task endpoints.
+
+The filters, the error blocks, the pagination envelope and the access rules are all shared:
+`app.api.filters`, `app.api.responses`, `build_page`, `app.core.permissions`. What is left
+here is only what is specific to tasks.
+"""
 
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Query, status
+from fastapi import APIRouter, Depends, status
 
 from app.api.deps import CurrentUser, PaginationDep, TaskServiceDep
-from app.core.constants import TaskPriority, TaskStatus
-from app.schemas.common import ErrorResponse, Message, PaginatedResponse
+from app.api.filters import FilterSet, task_filters
+from app.api.responses import ACCESS_ERRORS, WRITE_ERRORS, build_page
+from app.schemas.common import Message, PaginatedResponse
 from app.schemas.tag import TagAttach, TagRead
 from app.schemas.task import TaskCreate, TaskRead, TaskUpdate
 
 router = APIRouter()
 
-ERROR_RESPONSES: dict[int | str, dict[str, object]] = {
-    401: {"model": ErrorResponse, "description": "Not authenticated"},
-    403: {"model": ErrorResponse, "description": "Not allowed to touch this task"},
-    404: {"model": ErrorResponse, "description": "Task not found"},
-    422: {"model": ErrorResponse, "description": "Payload failed validation"},
-}
+TaskFilters = Annotated[FilterSet, Depends(task_filters)]
 
 
 @router.post(
@@ -29,7 +29,7 @@ ERROR_RESPONSES: dict[int | str, dict[str, object]] = {
     response_model=TaskRead,
     status_code=status.HTTP_201_CREATED,
     summary="Create a task",
-    responses=ERROR_RESPONSES,
+    responses=WRITE_ERRORS,
 )
 async def create_task(
     payload: TaskCreate,
@@ -45,61 +45,35 @@ async def create_task(
     "",
     response_model=PaginatedResponse[TaskRead],
     summary="List tasks",
-    responses=ERROR_RESPONSES,
+    responses=ACCESS_ERRORS,
 )
 async def list_tasks(
     service: TaskServiceDep,
     current_user: CurrentUser,
     pagination: PaginationDep,
-    project_id: Annotated[uuid.UUID | None, Query(description="Only tasks of this project")] = None,
-    status_filter: Annotated[
-        TaskStatus | None,
-        Query(alias="status", description="Filter by status"),
-    ] = None,
-    priority: Annotated[TaskPriority | None, Query(description="Filter by priority")] = None,
-    assignee_id: Annotated[uuid.UUID | None, Query(description="Filter by assignee")] = None,
-    mine: Annotated[bool, Query(description="Only tasks assigned to me")] = False,
-    search: Annotated[
-        str | None, Query(max_length=200, description="Match title or description")
-    ] = None,
-    tag: Annotated[
-        list[uuid.UUID] | None,
-        Query(description="Repeatable: only tasks carrying every listed tag"),
-    ] = None,
-    overdue: Annotated[bool, Query(description="Only tasks past their due date")] = False,
-    due_before: Annotated[
-        datetime | None,
-        Query(description="Only tasks due at or before this moment"),
-    ] = None,
+    filters: TaskFilters,
 ) -> PaginatedResponse[TaskRead]:
-    """The one listing endpoint: every filter is optional and they combine with AND."""
+    """The one task listing: every filter is optional and they combine with AND.
+
+    ``?mine=true`` is a rule and not a filter, so it is taken out of the set here and
+    given to the service as ``mine_only``. The service then forces it to mean "me",
+    whatever the caller asked for.
+    """
+    mine_only = filters.take("mine")
     items, total = await service.list_for_user(
         user=current_user,
-        page=pagination.page,
-        size=pagination.size,
-        project_id=project_id,
-        status=status_filter,
-        priority=priority,
-        assignee_id=assignee_id,
-        search=search,
-        tag_ids=list(tag) if tag else None,
-        overdue_only=overdue,
-        due_before=due_before,
-        mine_only=mine,
+        **pagination.as_kwargs(),
+        mine_only=mine_only,
+        **filters.to_repository(),
     )
-    return PaginatedResponse[TaskRead].create(
-        [TaskRead.model_validate(task, from_attributes=True) for task in items],
-        total=total,
-        page=pagination.page,
-        size=pagination.size,
-    )
+    return build_page(items, total, pagination, TaskRead)
 
 
 @router.get(
     "/{task_id}",
     response_model=TaskRead,
     summary="Read a task",
-    responses=ERROR_RESPONSES,
+    responses=ACCESS_ERRORS,
 )
 async def read_task(task_id: uuid.UUID, service: TaskServiceDep, _user: CurrentUser) -> TaskRead:
     """Task detail with tags, project and assignee already loaded."""
@@ -111,7 +85,7 @@ async def read_task(task_id: uuid.UUID, service: TaskServiceDep, _user: CurrentU
     "/{task_id}",
     response_model=TaskRead,
     summary="Update a task",
-    responses=ERROR_RESPONSES,
+    responses=WRITE_ERRORS,
 )
 async def update_task(
     task_id: uuid.UUID,
@@ -119,7 +93,7 @@ async def update_task(
     service: TaskServiceDep,
     current_user: CurrentUser,
 ) -> TaskRead:
-    """Partial update; status and priority changes are audited."""
+    """Partial update; status and priority changes are written to the audit log."""
     task = await service.update(task_id, payload, actor=current_user)
     return TaskRead.model_validate(task, from_attributes=True)
 
@@ -128,14 +102,14 @@ async def update_task(
     "/{task_id}/complete",
     response_model=TaskRead,
     summary="Mark a task as done",
-    responses=ERROR_RESPONSES,
+    responses=WRITE_ERRORS,
 )
 async def complete_task(
     task_id: uuid.UUID,
     service: TaskServiceDep,
     current_user: CurrentUser,
 ) -> TaskRead:
-    """Shortcut for `PATCH /tasks/{id}` with `status=done`."""
+    """Shortcut for ``PATCH /tasks/{id}`` with ``status=done``."""
     task = await service.complete(task_id, actor=current_user)
     return TaskRead.model_validate(task, from_attributes=True)
 
@@ -144,14 +118,14 @@ async def complete_task(
     "/{task_id}",
     response_model=Message,
     summary="Delete a task",
-    responses=ERROR_RESPONSES,
+    responses=WRITE_ERRORS,
 )
 async def delete_task(
     task_id: uuid.UUID,
     service: TaskServiceDep,
     current_user: CurrentUser,
 ) -> Message:
-    """Soft delete so the activity history stays intact."""
+    """Soft delete, so the activity history stays intact."""
     await service.delete(task_id, actor=current_user)
     return Message(message="Task deleted", detail={"task_id": str(task_id)})
 
@@ -160,7 +134,7 @@ async def delete_task(
     "/{task_id}/tags",
     response_model=TaskRead,
     summary="Attach a tag to a task",
-    responses=ERROR_RESPONSES,
+    responses=WRITE_ERRORS,
 )
 async def attach_tag(
     task_id: uuid.UUID,
@@ -177,7 +151,7 @@ async def attach_tag(
     "/{task_id}/tags/{tag_id}",
     response_model=TaskRead,
     summary="Detach a tag from a task",
-    responses=ERROR_RESPONSES,
+    responses=WRITE_ERRORS,
 )
 async def detach_tag(
     task_id: uuid.UUID,
@@ -194,13 +168,13 @@ async def detach_tag(
     "/{task_id}/tags",
     response_model=list[TagRead],
     summary="List the tags of a task",
-    responses=ERROR_RESPONSES,
+    responses=ACCESS_ERRORS,
 )
 async def list_task_tags(
     task_id: uuid.UUID,
     service: TaskServiceDep,
     _user: CurrentUser,
 ) -> list[TagRead]:
-    """Labels currently attached to the task."""
+    """The labels currently attached to the task."""
     task = await service.get(task_id)
     return [TagRead.model_validate(tag, from_attributes=True) for tag in task.tags]

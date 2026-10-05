@@ -571,7 +571,11 @@ def main() -> int:  # noqa: PLR0915 — a linear script reads better than helper
         other.get("/api/v1/projects").json()["total"] == 0,
         other.get("/api/v1/projects").text[:160],
     )
-    check("foreign project detail still resolves", foreign_project.status_code == 200)
+    check(
+        "reading a foreign project is refused -> 403",
+        foreign_project.status_code == 403,
+        foreign_project.text[:160],
+    )
 
     forbidden = other.patch(f"/api/v1/projects/{project_id}", json={"name": "hijacked"})
     check("PATCH foreign project -> 403", forbidden.status_code == 403, forbidden.text[:160])

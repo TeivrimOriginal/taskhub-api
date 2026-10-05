@@ -97,11 +97,27 @@ class ErrorCode(StrEnum):
     SERVICE_UNAVAILABLE = "service_unavailable"
 
 
+class CacheEntity(StrEnum):
+    """The kind of row a write touched.
+
+    Services pass this to `invalidate_entities()` instead of building cache key patterns
+    by hand, so "which cached views does a task write change?" has exactly one answer.
+    """
+
+    USER = "user"
+    PROJECT = "project"
+    TASK = "task"
+    COMMENT = "comment"
+    TAG = "tag"
+
+
 # Redis key namespaces — one place to see every cache key the app can create.
 CACHE_PREFIX = "taskhub"
 KEY_USER = f"{CACHE_PREFIX}:user"
 KEY_STATS = f"{CACHE_PREFIX}:stats"
 KEY_PROJECT = f"{CACHE_PREFIX}:project"
+KEY_TASK = f"{CACHE_PREFIX}:task"
+KEY_TAG = f"{CACHE_PREFIX}:tag"
 KEY_RATE_LIMIT = f"{CACHE_PREFIX}:rl"
 
 # Celery queue routing.

@@ -32,6 +32,9 @@ ERROR_RESPONSES: dict[int | str, dict[str, object]] = {
     409: {"model": ErrorResponse, "description": "E-mail or username already taken"},
     422: {"model": ErrorResponse, "description": "Payload failed validation"},
 }
+"""Auth has its own error block because the words differ: "invalid credentials" is a true
+statement about this group of endpoints and a wrong one everywhere else. The *shape* is
+still the shared `ErrorResponse` model from `app.schemas.common`."""
 
 
 @router.post(

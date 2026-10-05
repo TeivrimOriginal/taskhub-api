@@ -17,6 +17,14 @@
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File scripts\start-local-services.ps1
     powershell -ExecutionPolicy Bypass -File scripts\start-local-services.ps1 -Stop
+
+    ВАЖНО, если вызываешь из другой программы (CI-шаг, агент, пайплайн):
+    перенаправляй вывод в файл, а не в конвейер powershell — `| Select-Object`, `| more`
+    и подобное. Redis-заглушка живёт долго и держит унаследованный дескриптор вывода,
+    поэтому конвейер ждёт конца потока и вызов выглядит зависшим, хотя обе службы уже подняты:
+
+        powershell -ExecutionPolicy Bypass -File scripts\start-local-services.ps1 *> F:\tmp\svc.log
+        Get-Content F:\tmp\svc.log -Tail 12
 #>
 [CmdletBinding()]
 param(
@@ -89,7 +97,14 @@ else {
         Write-Host "PostgreSQL: готов на 127.0.0.1:$PostgresPort"
     }
     else {
-        Write-Error "PostgreSQL не поднялся. Смотри $PostgresLog и $env:TEMP\pg-start.err"
+        # Из неинтерактивного процесса (например, вложенный powershell -File) дочерние
+        # процессы postmaster падают с 0xC0000142 — DLL не инициализируются без
+        # интерактивной сессии. Поэтому подсказка точная, а не «попробуйте ещё раз».
+        Write-Warning "PostgreSQL не поднялся из этого процесса."
+        Write-Warning 'Почти всегда это 0xC0000142 в '$PostgresLog': дочерние процессы'
+        Write-Warning 'postmaster не инициализируются вне интерактивной сессии.'
+        Write-Warning 'Запусти в обычном окне PowerShell:'
+        Write-Warning "  & '$PostgresBin\pg_ctl.exe' -D '$PostgresData' -l '$PostgresLog' -o `"-p $PostgresPort -c listen_addresses=127.0.0.1`" start"
     }
 }
 

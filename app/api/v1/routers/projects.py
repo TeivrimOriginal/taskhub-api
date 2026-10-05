@@ -1,25 +1,31 @@
-"""Project endpoints."""
+"""Project endpoints.
+
+Everything that repeats across the API lives elsewhere on purpose: the error blocks come
+from `app.api.responses`, the pagination envelope from `build_page`, the filters from
+`app.api.filters` and the access rules from `app.core.permissions`. A handler here only
+describes what this endpoint does.
+"""
 
 from __future__ import annotations
 
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Query, status
+from fastapi import APIRouter, Depends, status
 
 from app.api.deps import CurrentUser, PaginationDep, ProjectServiceDep, TaskServiceDep
-from app.core.constants import TaskStatus
-from app.schemas.common import ErrorResponse, Message, PaginatedResponse
+from app.api.filters import FilterSet, project_filters, task_filters
+from app.api.responses import ACCESS_ERRORS, WRITE_ERRORS, build_page
+from app.core.permissions import assert_read_project
+from app.schemas.common import Message, PaginatedResponse
 from app.schemas.project import ProjectCreate, ProjectRead, ProjectUpdate
 from app.schemas.task import TaskRead
 
 router = APIRouter()
 
-ERROR_RESPONSES: dict[int | str, dict[str, object]] = {
-    401: {"model": ErrorResponse, "description": "Not authenticated"},
-    403: {"model": ErrorResponse, "description": "Not the owner and not an admin"},
-    404: {"model": ErrorResponse, "description": "Project not found"},
-}
+#: The filters of this router, resolved by FastAPI into query parameters.
+ProjectFilters = Annotated[FilterSet, Depends(project_filters)]
+TaskFilters = Annotated[FilterSet, Depends(task_filters)]
 
 
 @router.post(
@@ -27,14 +33,18 @@ ERROR_RESPONSES: dict[int | str, dict[str, object]] = {
     response_model=ProjectRead,
     status_code=status.HTTP_201_CREATED,
     summary="Create a project",
-    responses=ERROR_RESPONSES,
+    responses=WRITE_ERRORS,
 )
 async def create_project(
     payload: ProjectCreate,
     service: ProjectServiceDep,
     current_user: CurrentUser,
 ) -> ProjectRead:
-    """The owner is always the caller — the field is not accepted from the body."""
+    """Create a project.
+
+    The owner is always the caller: the field is not accepted from the body, so a client
+    cannot create a project "for" somebody else.
+    """
     project = await service.create(payload, owner=current_user)
     return ProjectRead.model_validate(project, from_attributes=True)
 
@@ -43,46 +53,40 @@ async def create_project(
     "",
     response_model=PaginatedResponse[ProjectRead],
     summary="List projects",
-    responses=ERROR_RESPONSES,
+    responses=ACCESS_ERRORS,
 )
 async def list_projects(
     service: ProjectServiceDep,
     current_user: CurrentUser,
     pagination: PaginationDep,
-    search: Annotated[
-        str | None, Query(max_length=120, description="Match name or description")
-    ] = None,
-    is_active: Annotated[bool | None, Query(description="Filter by active flag")] = None,
+    filters: ProjectFilters,
 ) -> PaginatedResponse[ProjectRead]:
-    """Your own projects; staff see every project."""
+    """Your own projects; staff see every project.
+
+    The filters are declared in `app.api.filters`, so this handler never names them.
+    """
     items, total = await service.list_for_user(
         user=current_user,
-        page=pagination.page,
-        size=pagination.size,
-        search=search,
-        is_active=is_active,
+        **pagination.as_kwargs(),
+        **filters.to_repository(),
     )
-    return PaginatedResponse[ProjectRead].create(
-        [ProjectRead.model_validate(project, from_attributes=True) for project in items],
-        total=total,
-        page=pagination.page,
-        size=pagination.size,
-    )
+    return build_page(items, total, pagination, ProjectRead)
 
 
 @router.get(
     "/{project_id}",
     response_model=ProjectRead,
     summary="Read a project",
-    responses=ERROR_RESPONSES,
+    responses=ACCESS_ERRORS,
 )
 async def read_project(
     project_id: uuid.UUID,
     service: ProjectServiceDep,
-    _current_user: CurrentUser,
+    current_user: CurrentUser,
 ) -> ProjectRead:
-    """Project detail including the denormalised task counters."""
+    """Project detail, including the denormalised task counters."""
     project = await service.get(project_id)
+    assert_read_project(current_user, project)
     return ProjectRead.model_validate(project, from_attributes=True)
 
 
@@ -90,7 +94,7 @@ async def read_project(
     "/{project_id}",
     response_model=ProjectRead,
     summary="Update a project",
-    responses=ERROR_RESPONSES,
+    responses=WRITE_ERRORS,
 )
 async def update_project(
     project_id: uuid.UUID,
@@ -98,7 +102,7 @@ async def update_project(
     service: ProjectServiceDep,
     current_user: CurrentUser,
 ) -> ProjectRead:
-    """Owner or admin only."""
+    """Partial update. Only the owner or an admin may do it."""
     project = await service.update(project_id, payload, actor=current_user)
     return ProjectRead.model_validate(project, from_attributes=True)
 
@@ -107,14 +111,14 @@ async def update_project(
     "/{project_id}",
     response_model=Message,
     summary="Delete a project and its tasks",
-    responses=ERROR_RESPONSES,
+    responses=WRITE_ERRORS,
 )
 async def delete_project(
     project_id: uuid.UUID,
     service: ProjectServiceDep,
     current_user: CurrentUser,
 ) -> Message:
-    """Soft delete: the project and its tasks disappear but stay in the audit trail."""
+    """Soft delete: the project and its tasks disappear, the audit history stays."""
     await service.delete(project_id, actor=current_user)
     return Message(message="Project deleted", detail={"project_id": str(project_id)})
 
@@ -123,34 +127,27 @@ async def delete_project(
     "/{project_id}/tasks",
     response_model=PaginatedResponse[TaskRead],
     summary="List the tasks of a project",
-    responses=ERROR_RESPONSES,
+    responses=ACCESS_ERRORS,
 )
 async def list_project_tasks(
     project_id: uuid.UUID,
     project_service: ProjectServiceDep,
     task_service: TaskServiceDep,
-    _current_user: CurrentUser,
+    current_user: CurrentUser,
     pagination: PaginationDep,
-    status_filter: Annotated[
-        TaskStatus | None,
-        Query(alias="status", description="Filter by task status"),
-    ] = None,
-    search: Annotated[
-        str | None, Query(max_length=200, description="Match title or description")
-    ] = None,
+    filters: TaskFilters,
 ) -> PaginatedResponse[TaskRead]:
-    """Tasks of one project, with the same envelope as every other list endpoint."""
+    """Tasks of one project, with the same envelope as every other list endpoint.
+
+    The same task filters as ``GET /tasks`` are available, except ``project_id``: the path
+    already decides it, so the service overwrites whatever the query string asked for.
+    """
     project = await project_service.get(project_id)
+    assert_read_project(current_user, project)
+
     items, total = await task_service.list_for_project(
         project=project,
-        page=pagination.page,
-        size=pagination.size,
-        status=status_filter,
-        search=search,
+        **pagination.as_kwargs(),
+        **filters.to_repository(),
     )
-    return PaginatedResponse[TaskRead].create(
-        [TaskRead.model_validate(task, from_attributes=True) for task in items],
-        total=total,
-        page=pagination.page,
-        size=pagination.size,
-    )
+    return build_page(items, total, pagination, TaskRead)

@@ -1,4 +1,9 @@
-"""Project service: ownership rules, counters and cache invalidation."""
+"""Project service: ownership rules, counters and cache invalidation.
+
+This service owns nothing about *who* may do something. Every access question is asked of
+`app.core.permissions`, so the rule for a project, a task and a comment cannot drift apart,
+and every cache question is asked of `app.core.cache.invalidate_entities`.
+"""
 
 from __future__ import annotations
 
@@ -7,9 +12,11 @@ from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.cache import invalidate_pattern, make_key
-from app.core.errors import PermissionDeniedError, ProjectNotFoundError
+from app.core.cache import invalidate_entities
+from app.core.constants import CacheEntity
+from app.core.errors import ProjectNotFoundError
 from app.core.logging import get_logger
+from app.core.permissions import assert_write_project, listing_owner_id
 from app.models.project import Project
 from app.models.user import User
 from app.repositories.project import ProjectRepository
@@ -41,19 +48,15 @@ class ProjectService:
         user: User,
         page: int,
         size: int,
-        search: str | None = None,
-        is_active: bool | None = None,
+        **filters: object,
     ) -> tuple[list[Project], int]:
-        """List projects visible to `user`.
+        """List the projects `user` may see.
 
-        Staff see every project; everyone else sees only their own. This single branch
-        is the reason no endpoint has to re-implement the visibility rule.
+        The filters arrive as keywords straight from `FilterSet.to_repository()`, so a new
+        filter needs no change here. `listing_owner_id()` applies the visibility rule:
+        staff get every project, everyone else gets only their own.
         """
-        stmt = self.projects.make_listing(
-            owner_id=None if user.is_staff else user.id,
-            search=search,
-            is_active=is_active,
-        )
+        stmt = self.projects.make_listing(owner_id=listing_owner_id(user), **filters)  # type: ignore[arg-type]
         return await self.projects.paginate(stmt, page=page, size=size)
 
     # ------------------------------------------------------------------ create
@@ -68,8 +71,7 @@ class ProjectService:
         )
         await self.projects.insert(project)
         await self.session.commit()
-        await self.session.refresh(project)
-        await self._invalidate(owner.id)
+        await invalidate_entities(CacheEntity.PROJECT)
         logger.info("project_created", project_id=str(project.id), owner=str(owner.id))
         return project
 
@@ -77,24 +79,28 @@ class ProjectService:
     async def update(
         self, project_id: uuid.UUID, payload: ProjectUpdate, *, actor: User
     ) -> Project:
-        """Update a project; only the owner or an admin may do so."""
+        """Update a project. Only the owner or an admin may do it."""
         project = await self.get(project_id)
-        self._assert_may_manage(project, actor)
+        assert_write_project(actor, project)
+
         values = payload.model_dump(exclude_unset=True)
         if values:
             project = await self.projects.update(project, values)
             project.last_activity_at = datetime.now(UTC)
             await self.session.commit()
-            await self._invalidate(project.owner_id)
+            await invalidate_entities(CacheEntity.PROJECT)
             logger.info("project_updated", project_id=str(project.id), fields=sorted(values))
         return project
 
     # ------------------------------------------------------------------ delete
     async def delete(self, project_id: uuid.UUID, *, actor: User) -> None:
-        """Soft-delete the project and its tasks (children of a soft-deleted parent
-        would otherwise stay visible through `GET /tasks`)."""
+        """Soft-delete the project and its tasks.
+
+        The tasks go with it, because a task whose project is gone would otherwise still be
+        visible through `GET /tasks`. Soft, not hard: the audit history stays readable.
+        """
         project = await self.get(project_id)
-        self._assert_may_manage(project, actor)
+        assert_write_project(actor, project)
 
         now = datetime.now(UTC)
         project.deleted_at = now
@@ -104,22 +110,10 @@ class ProjectService:
 
         await self.projects.insert(project, flush=False)
         await self.session.commit()
-        await self._invalidate(project.owner_id)
+        await invalidate_entities(CacheEntity.PROJECT, CacheEntity.TASK)
         logger.info(
             "project_deleted",
             project_id=str(project.id),
             tasks_soft_deleted=True,
             actor=str(actor.id),
         )
-
-    # ----------------------------------------------------------------- helpers
-    @staticmethod
-    def _assert_may_manage(project: Project, actor: User) -> None:
-        if project.owner_id != actor.id and not actor.is_superuser and actor.role.value != "admin":
-            raise PermissionDeniedError("Only the project owner or an admin may change it")
-
-    @staticmethod
-    async def _invalidate(owner_id: uuid.UUID) -> None:
-        await invalidate_pattern(f"{make_key('project')}*")
-        await invalidate_pattern(f"{make_key('stats')}*")
-        logger.debug("project_cache_invalidated", owner_id=str(owner_id))

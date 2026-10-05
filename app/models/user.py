@@ -10,7 +10,7 @@ from sqlalchemy import Boolean, DateTime, Enum as SAEnum, Index, String
 from sqlalchemy.dialects.postgresql import CITEXT
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.core.constants import Role
+from app.core.constants import STAFF_ROLES, Role
 from app.db.base import Base, SoftDeleteMixin, TimestampMixin
 
 if TYPE_CHECKING:
@@ -85,12 +85,13 @@ class User(TimestampMixin, SoftDeleteMixin, Base):
     # ------------------------------------------------------------------ helpers
     @property
     def is_staff(self) -> bool:
-        """Moderators and admins may act on other people's resources."""
-        return self.role in {Role.MODERATOR, Role.ADMIN} or self.is_superuser
+        """True for staff: a moderator, an admin, or a superuser.
 
-    def can_manage(self, other: User) -> bool:
-        """Owners manage themselves; admins manage everybody."""
-        return self.id == other.id or self.is_superuser or self.role is Role.ADMIN
+        This is the *definition*. Everything else asks `app.core.permissions.is_staff()`,
+        which simply calls this — so the rule about what counts as staff lives here and
+        only here, and the rule about what staff may *do* lives in `permissions`.
+        """
+        return self.role in STAFF_ROLES or self.is_superuser
 
     def __repr__(self) -> str:
         return f"<User {self.username} ({self.role.value})>"
