@@ -3,10 +3,23 @@
 Each job resolves its own recipients from the database, so enqueuing only needs an id.
 Jobs are idempotent where it matters: the overdue sweep records when a task was last
 announced and therefore never sends the same reminder twice.
+
+Why every task here is a *sync* function
+----------------------------------------
+Celery's prefork pool does not await a coroutine. An `async def` task is called, produces
+a coroutine, and the worker then tries to JSON-encode that coroutine as the task result:
+
+    kombu.exceptions.EncodeError: Object of type coroutine is not JSON serializable
+
+The body of the task never runs, the result cannot be sent back, and the job fails
+silently from the caller's point of view. So each public task is a plain `def` that hands
+the work to `asyncio.run`, and the real logic lives in an `async def` helper next to it —
+which is also what makes that logic directly testable without a broker.
 """
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import UTC, datetime
 
@@ -34,8 +47,13 @@ logger = get_logger(__name__)
     retry_backoff=True,
     retry_jitter=True,
 )
-async def send_task_assigned(self: Task, task_id: str) -> dict[str, str]:
+def send_task_assigned(self: Task, task_id: str) -> dict[str, str]:
     """Mail the assignee of a freshly created task."""
+    return asyncio.run(_send_task_assigned(task_id))
+
+
+async def _send_task_assigned(task_id: str) -> dict[str, str]:
+    """Body of `send_task_assigned`, split out so it can be awaited in a test."""
     async with session_scope() as session:
         payload = await _assignment_payload(session, uuid.UUID(task_id))
     if payload is None:
@@ -57,8 +75,13 @@ async def send_task_assigned(self: Task, task_id: str) -> dict[str, str]:
     default_retry_delay=60,
     queue=QUEUE_NOTIFICATIONS,
 )
-async def send_overdue_digest(self: Task, user_id: str) -> dict[str, int | str]:
+def send_overdue_digest(self: Task, user_id: str) -> dict[str, int | str]:
     """Send one digest listing every overdue task of a user."""
+    return asyncio.run(_send_overdue_digest(user_id))
+
+
+async def _send_overdue_digest(user_id: str) -> dict[str, int | str]:
+    """Body of `send_overdue_digest`."""
     async with session_scope() as session:
         user = await UserRepository(session).get_alive(uuid.UUID(user_id))
         if user is None:
@@ -68,10 +91,8 @@ async def send_overdue_digest(self: Task, user_id: str) -> dict[str, int | str]:
         if not overdue:
             return {"status": "skipped", "reason": "nothing_overdue", "sent": 0}
 
-        sent = await EmailService().send_overdue_digest(
-            to=user.email,
-            lines=overdue,
-        )
+        sent = await EmailService().send_overdue_digest(to=user.email, lines=overdue)
+
     return {"status": "sent" if sent else "failed", "sent": int(sent), "to": user.email}
 
 
@@ -92,7 +113,7 @@ async def _assignment_payload(session: AsyncSession, task_id: uuid.UUID) -> dict
 
 
 async def _overdue_of_user(session: AsyncSession, user_id: uuid.UUID) -> list[str]:
-    """Human-readable lines for the digest: `Title (project) — due <date>`."""
+    """Human-readable lines for the digest: `«Title» (project) — N day(s) overdue`."""
     tasks = await TaskRepository(session).bulk_overdue(limit=1000)
     lines: list[str] = []
     now = datetime.now(UTC)
@@ -100,6 +121,6 @@ async def _overdue_of_user(session: AsyncSession, user_id: uuid.UUID) -> list[st
         if task.assignee_id != user_id or task.due_date is None:
             continue
         project_name = task.project.name if task.project is not None else "TaskHub"
-        days_late = (now - task.due_date).days
+        days_late = max((now - task.due_date).days, 0)
         lines.append(f"«{task.title}» ({project_name}) — {days_late} day(s) overdue")
     return lines
