@@ -454,8 +454,12 @@ jobs:
         # The API being healthy says nothing about the background half of the stack.
         run: |
           for attempt in $(seq 1 30); do
-            if docker compose exec -T worker \
-              celery -A app.core.celery_app:celery_app inspect ping -d "celery@$HOSTNAME" \
+            # `sh -c` is the point: $HOSTNAME has to be expanded by a shell *inside* the
+            # container. The runner's own shell would expand it to the runner's hostname,
+            # so the destination named a node that does not exist and every attempt
+            # timed out against a perfectly healthy worker.
+            if docker compose exec -T worker sh -c \
+              'celery -A app.core.celery_app:celery_app inspect ping -d "celery@$HOSTNAME"' \
               >/dev/null 2>&1; then
               echo "the worker answered ping"
               exit 0
