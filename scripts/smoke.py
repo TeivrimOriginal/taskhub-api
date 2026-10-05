@@ -97,30 +97,73 @@ def addressed_to(recipient: str, message: dict[str, Any]) -> bool:
     return False
 
 
-def wait_for_mail(mailpit_url: str, recipient: str, *, timeout: float) -> dict[str, Any] | None:
+def wait_for_mail(
+    mailpit_url: str,
+    recipient: str,
+    *,
+    timeout: float,
+    diagnostics: list[str] | None = None,
+) -> dict[str, Any] | None:
     """Poll a Mailpit inbox until a message for `recipient` shows up.
 
     Mailpit's API is polled rather than a webhook because the delivery path is exactly what
     is being tested: API -> database -> Celery -> SMTP -> inbox. The worker is asynchronous,
     so this has to wait rather than assert immediately.
+
+    Pass `diagnostics` to get an explanation when nothing arrives. "Nothing was delivered"
+    and "the sink was never reachable" are different bugs, and a bare `None` makes the
+    caller guess — the transport errors are swallowed on purpose, so nothing else would
+    report them.
     """
     deadline = time.monotonic() + timeout
     inbox = httpx.Client(base_url=mailpit_url.rstrip("/"), timeout=10.0)
+    polls = 0
+    seen = 0
+    last_status: int | None = None
+    last_error: str | None = None
+    recipients: list[str] = []
+
+    def report() -> None:
+        if diagnostics is None:
+            return
+        if last_error is not None:
+            diagnostics.append(f"{polls} polls, last transport error: {last_error}")
+        elif last_status is None:
+            diagnostics.append(f"{polls} polls, the sink never answered")
+        else:
+            sample = ", ".join(recipients[:3]) or "no recipients on any message"
+            diagnostics.append(
+                f"{polls} polls, HTTP {last_status}, {seen} message(s) in the inbox; "
+                f"recipients seen: {sample}"
+            )
+
     try:
         while time.monotonic() < deadline:
+            polls += 1
             try:
                 response = inbox.get("/api/v1/messages", params={"limit": 50})
+                last_status = response.status_code
+                last_error = None
                 if response.status_code == 200:
-                    for message in response.json().get("messages", []):
+                    messages = response.json().get("messages", [])
+                    seen = len(messages)
+                    for message in messages:
+                        for header in message.get("To", []):
+                            recipients.append(str(header.get("Value", "unknown")))
                         if addressed_to(recipient, message):
+                            if diagnostics is not None:
+                                diagnostics.append(
+                                    f"matched after {polls} poll(s), {seen} message(s) seen"
+                                )
                             return message
-            except httpx.HTTPError:
+            except httpx.HTTPError as exc:
                 # The sink may not be up yet, or may go away mid-run. Keep trying until the
                 # deadline rather than failing the whole script on a transport error.
-                pass
+                last_error = f"{type(exc).__name__}: {exc}"
             time.sleep(1.0)
     finally:
         inbox.close()
+        report()
     return None
 
 
@@ -158,11 +201,17 @@ def check_background_work(
     )
     check("POST /tasks with assignee_id -> 201", assigned.status_code == 201, assigned.text[:200])
 
-    message = wait_for_mail(mailpit_url, recipient, timeout=mail_timeout)
+    mail_notes: list[str] = []
+    message = wait_for_mail(
+        mailpit_url,
+        recipient,
+        timeout=mail_timeout,
+        diagnostics=mail_notes,
+    )
     check(
         "the Celery worker e-mailed the assignee",
         message is not None,
-        f"nothing addressed to {recipient} within {mail_timeout:g}s",
+        "; ".join(mail_notes) or f"nothing addressed to {recipient} within {mail_timeout:g}s",
     )
     if message is not None:
         check(
