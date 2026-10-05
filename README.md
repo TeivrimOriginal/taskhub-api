@@ -21,21 +21,25 @@ Every number below is copy-pasted from a real run, not estimated. Python 3.14.6,
 PostgreSQL 17.4 on `127.0.0.1:5434`, Redis reachable on `127.0.0.1:6379`:
 
 ```
-pytest                         → 280 passed, 1 skipped in 37.84s
-coverage (branch=True)         → TOTAL 4441 stmts, 314 miss, 398 branch, 82 partial, 91.11%
+pytest                         → 318 passed, 6 skipped in 55.83s
+                                 (6 skips are Redis-only: no Redis on this box)
+coverage (branch=True)         → TOTAL 4642 stmts, 358 miss, 408 branch, 88 partial, 90.42%
                                  gate is 85% — reached
 ruff check .                   → All checks passed!
-ruff format --check .          → 95 files already formatted
-mypy                           → Success: no issues found in 87 source files
-alembic upgrade head           → 8 tables (identical to Base.metadata), 21 indexes
-                                 citext installed; users.email udt_name = citext
-alembic downgrade base         → no application tables left
-smoke.py against live uvicorn  → 67 passed / 0 failed
+ruff format --check .          → 98 files already formatted
+mypy                           → Success: no issues found in 90 source files
+alembic upgrade head           → 8 tables, identical to Base.metadata; citext + pg_trgm installed
+                                 (verified directly: 8 tables in information_schema,
+                                  pg_extension = citext, pg_trgm, plpgsql)
 ```
 
 `make migration-verify` runs the schema comparison end to end and rolls everything back
 again. The suite stays green on a bare machine with no Redis — the Redis-only tests skip —
 and gets stricter in CI, where `redis:7` and `postgres:16` are service containers.
+
+Without a database the integration directory skips itself in one second instead of
+producing a hundred connection timeouts: `tests/integration/conftest.py` does a single
+TCP probe on session start and prints the command that fixes it.
 
 **What is _not_ verified here:** the machine this was last run on has no Docker, so
 `Dockerfile`, `docker-compose.yml` and `scripts/smoke.py` have never been executed locally
