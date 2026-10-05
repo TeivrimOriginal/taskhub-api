@@ -21,16 +21,36 @@ Every number below is copy-pasted from a real run, not estimated. Python 3.14.6,
 PostgreSQL 17.4 on `127.0.0.1:5434`, Redis reachable on `127.0.0.1:6379`:
 
 ```
-pytest                         → 318 passed, 6 skipped in 55.83s
+pytest                         → 294 collected: 288 passed, 6 skipped
                                  (6 skips are Redis-only: no Redis on this box)
-coverage (branch=True)         → TOTAL 4642 stmts, 358 miss, 408 branch, 88 partial, 90.42%
+coverage (branch=True)         → TOTAL 4553 stmts, 358 miss, 408 branch, 88 partial, 90.24%
                                  gate is 85% — reached
 ruff check .                   → All checks passed!
 ruff format --check .          → 98 files already formatted
-mypy                           → Success: no issues found in 90 source files
+mypy                           → Success: no issues found in 89 source files
 alembic upgrade head           → 8 tables, identical to Base.metadata; citext + pg_trgm installed
                                  (verified directly: 8 tables in information_schema,
                                   pg_extension = citext, pg_trgm, plpgsql)
+```
+
+**Reproduce it — and watch the port.** The integration probe reads `TEST_DATABASE_URL`,
+then `POSTGRES_SYNC_URI`, then `POSTGRES_HOST`/`POSTGRES_PORT`, and that last one
+**defaults to 5432 while this project's `.env` points at 5434**. So a bare `pytest` on a
+box with PostgreSQL listening on 5434 does not fail — it quietly skips the whole
+integration directory and prints a *better looking* run:
+
+| environment | result |
+|---|---|
+| port set, database reachable | `288 passed, 6 skipped` (6 skips = Redis absent) |
+| port not set, database invisible | `293 passed, 1 skipped` — the directory skips itself as one |
+
+More tests "pass" without the database than with it, so the number alone will not tell you
+which happened. Set the port before believing a green run:
+
+```powershell
+$env:POSTGRES_PORT = "5434"
+$env:TEST_DATABASE_URL = "postgresql+psycopg://postgres:postgres@127.0.0.1:5434/taskhub"
+pytest
 ```
 
 `make migration-verify` runs the schema comparison end to end and rolls everything back
