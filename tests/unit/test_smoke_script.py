@@ -86,6 +86,42 @@ def _message(recipient: str, *, subject: str = "s", identifier: str = "1") -> di
     }
 
 
+class TestRecipientShapes:
+    """Mailpit is not consistent about the recipient key, and a check that only
+    understands one of them passes vacuously — the inbox is full and the assertion still
+    reports "no mail". Every shape the API can return has to be recognised."""
+
+    def test_the_message_list_shape_uses_address(self) -> None:
+        message = {"ID": "1", "To": [{"Name": "Somebody", "Address": "someone@taskhub.dev"}]}
+        assert smoke.addressed_to("someone@taskhub.dev", message) is True
+
+    def test_the_raw_header_shape_uses_value(self) -> None:
+        assert smoke.addressed_to("someone@taskhub.dev", _message("someone@taskhub.dev")) is True
+
+    def test_a_plain_string_recipient_counts(self) -> None:
+        message = {"ID": "1", "To": ["someone@taskhub.dev"]}
+        assert smoke.addressed_to("someone@taskhub.dev", message) is True
+
+    def test_a_display_name_pair_still_counts(self) -> None:
+        message = {"ID": "1", "To": [{"Name": "S", "Address": "S <someone@taskhub.dev>"}]}
+        assert smoke.addressed_to("someone@taskhub.dev", message) is True
+
+    def test_an_entry_with_no_address_does_not_match(self) -> None:
+        message = {"ID": "1", "To": [{"Name": "Somebody"}]}
+        assert smoke.addressed_to("someone@taskhub.dev", message) is False
+
+    def test_a_null_recipient_list_does_not_raise(self) -> None:
+        assert smoke.addressed_to("someone@taskhub.dev", {"ID": "1", "To": None}) is False
+
+    def test_the_diagnostic_label_names_the_recipient(self) -> None:
+        message = {"ID": "1", "To": [{"Name": "S", "Address": "someone@taskhub.dev"}]}
+        labels = [smoke._recipient_labels(header) for header in message["To"]]
+        assert labels == ["someone@taskhub.dev"]
+
+    def test_the_diagnostic_label_survives_a_useless_entry(self) -> None:
+        assert smoke._recipient_labels({"Name": "S"}) == "<no address>"
+
+
 class TestAddressedTo:
     @pytest.mark.parametrize(
         "value",

@@ -82,19 +82,40 @@ def section(title: str) -> None:
 def addressed_to(recipient: str, message: dict[str, Any]) -> bool:
     """`True` if any `To:` header of a Mailpit message is addressed to `recipient`.
 
-    Mailpit returns one entry per recipient, each with a display `Name` and the address in
-    `Value`. The address is also accepted in the RFC 5322 `Display Name <addr>` form, because
-    a stub or a different mail UI may hand back the raw header instead.
+    Mailpit does not spell the recipient the same way in every response: the message list
+    endpoint returns `{"Name": ..., "Address": ...}` per recipient, while the raw-header
+    endpoints use `Value`, and a different mail UI may hand back a plain string. Accepting
+    only one of them makes the check pass vacuously — it looks for an address, finds none,
+    and reports "no mail" while the inbox is full. So the address is read from whichever
+    key is present, and the RFC 5322 `Display Name <addr>` form is handled too.
     """
     wanted = recipient.strip().lower()
-    for header in message.get("To", []):
-        address = str(header.get("Value", "")).strip().lower()
+    for header in message.get("To", []) or []:
+        if isinstance(header, str):
+            raw = header
+        elif isinstance(header, dict):
+            raw = str(header.get("Address") or header.get("Value") or header.get("address") or "")
+        else:
+            continue
+        address = raw.strip().lower()
         if "<" in address:
             address = address.rsplit("<", 1)[-1]
         address = address.rstrip(">").strip()
         if address == wanted:
             return True
     return False
+
+
+def _recipient_labels(header: object) -> str:
+    """Human-readable recipient, for the diagnostics line on a failed check."""
+    if isinstance(header, str):
+        return header
+    if isinstance(header, dict):
+        for key in ("Address", "Value", "address"):
+            value = header.get(key)
+            if value:
+                return str(value)
+    return "<no address>"
 
 
 def wait_for_mail(
@@ -148,8 +169,9 @@ def wait_for_mail(
                     messages = response.json().get("messages", [])
                     seen = len(messages)
                     for message in messages:
-                        for header in message.get("To", []):
-                            recipients.append(str(header.get("Value", "unknown")))
+                        recipients.extend(
+                            _recipient_labels(header) for header in message.get("To", []) or []
+                        )
                         if addressed_to(recipient, message):
                             if diagnostics is not None:
                                 diagnostics.append(
