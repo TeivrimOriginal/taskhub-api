@@ -226,7 +226,7 @@ flowchart LR
 Requirements: Docker Desktop + Docker Compose v2.
 
 ```bash
-git clone https://github.com/OWNER/taskhub-api.git
+git clone https://github.com/TeivrimOriginal/taskhub-api.git
 cd taskhub-api
 cp .env.example .env          # change SECRET_KEY and passwords
 docker compose up --build -d  # api, worker, beat, postgres, redis, nginx, mailpit

@@ -8,7 +8,7 @@ change is expected to look like.
 ## Getting it running
 
 ```bash
-git clone https://github.com/OWNER/taskhub-api.git
+git clone https://github.com/TeivrimOriginal/taskhub-api.git
 cd taskhub-api
 cp .env.example .env
 docker compose up --build -d

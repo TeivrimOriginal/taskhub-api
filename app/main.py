@@ -86,7 +86,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         openapi_url="/openapi.json",
         lifespan=lifespan,
         swagger_ui_parameters={"persistAuthorization": True, "displayRequestDuration": True},
-        contact={"name": "TaskHub", "url": "https://github.com/OWNER/taskhub-api"},
+        contact={"name": "TaskHub", "url": "https://github.com/TeivrimOriginal/taskhub-api"},
         license_info={"name": "MIT"},
     )
     app.state.settings = resolved

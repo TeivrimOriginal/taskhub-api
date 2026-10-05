@@ -60,9 +60,9 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/OWNER/taskhub-api"
-Repository = "https://github.com/OWNER/taskhub-api"
-Issues = "https://github.com/OWNER/taskhub-api/issues"
+Homepage = "https://github.com/TeivrimOriginal/taskhub-api"
+Repository = "https://github.com/TeivrimOriginal/taskhub-api"
+Issues = "https://github.com/TeivrimOriginal/taskhub-api/issues"
 
 [project.scripts]
 taskhub = "app.cli:main"
