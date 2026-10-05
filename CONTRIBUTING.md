@@ -86,6 +86,17 @@ make test-integration   # real PostgreSQL
   limiter buckets on `ratelimit:<client>:<window>`, and that bucket survives both a test
   and a whole `pytest` process — see `_limited_client()` in
   `tests/integration/test_infrastructure.py` for how the limiter tests stay hermetic.
+* Skipping is a safety net, not a licence to forget. If you want the Redis-dependent
+  tests to actually run locally without installing a server, `tools/redis_stub.py` starts
+  a real RESP-speaking stand-in (`fakeredis.TcpFakeServer`) on port 6379 in its own
+  virtualenv, so `fakeredis` stays out of the project dependencies:
+
+  ```bash
+  python -m venv .venv-redis
+  .venv-redis/Scripts/pip install fakeredis      # Windows
+  .venv-redis/Scripts/python tools/redis_stub.py
+  pytest tests/unit/test_cache.py -v             # the skipped test now reports PASSED
+  ```
 
 ### Why the gate only runs on Python 3.14
 
