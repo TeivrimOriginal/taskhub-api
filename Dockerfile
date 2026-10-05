@@ -57,8 +57,15 @@ RUN chmod +x /usr/local/bin/entrypoint.sh
 USER taskhub
 EXPOSE 8000
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD curl -fsS http://127.0.0.1:8000/health/live || exit 1
+# NOTE: no image-level HEALTHCHECK on purpose.
+# One image serves four roles (api, worker, beat, migrate) and only `api` speaks HTTP.
+# An image-level probe would be inherited by the Celery containers, curl a port nobody
+# listens on, and mark them permanently unhealthy — which is exactly what broke
+# `docker compose up --wait`. Health therefore lives next to each service in
+# docker-compose.yml, where the probe can match the role.
+#
+# For a bare `docker run`, add the probe explicitly:
+#   --health-cmd "curl -fsS http://127.0.0.1:8000/health/live || exit 1"
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["serve"]
