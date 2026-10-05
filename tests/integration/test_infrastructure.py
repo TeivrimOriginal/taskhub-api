@@ -89,7 +89,7 @@ class TestMaintenanceTasks:
         user: User,
         eager_celery: None,
     ) -> None:
-        from app.workers.tasks.maintenance import notify_overdue_tasks
+        from app.workers.tasks.maintenance import _notify_overdue_tasks
 
         task = Task(
             project_id=project.id,
@@ -100,13 +100,13 @@ class TestMaintenanceTasks:
         db_session.add(task)
         await db_session.commit()
 
-        first = await notify_overdue_tasks()
+        first = await _notify_overdue_tasks(limit=500)
         assert first["tasks"] == 1
 
         await db_session.refresh(task)
         assert task.overdue_notified_at is not None
 
-        second = await notify_overdue_tasks()
+        second = await _notify_overdue_tasks(limit=500)
         assert second["tasks"] == 0, "a task must never be announced twice"
 
     async def test_future_tasks_are_not_announced(
@@ -115,7 +115,7 @@ class TestMaintenanceTasks:
         project: Project,
         eager_celery: None,
     ) -> None:
-        from app.workers.tasks.maintenance import notify_overdue_tasks
+        from app.workers.tasks.maintenance import _notify_overdue_tasks
 
         db_session.add(
             Task(
@@ -125,7 +125,7 @@ class TestMaintenanceTasks:
             )
         )
         await db_session.commit()
-        assert (await notify_overdue_tasks())["tasks"] == 0
+        assert (await _notify_overdue_tasks(limit=500))["tasks"] == 0
 
     async def test_finished_tasks_are_not_announced(
         self,
@@ -134,7 +134,7 @@ class TestMaintenanceTasks:
         eager_celery: None,
     ) -> None:
         from app.core.constants import TaskStatus
-        from app.workers.tasks.maintenance import notify_overdue_tasks
+        from app.workers.tasks.maintenance import _notify_overdue_tasks
 
         db_session.add(
             Task(
@@ -146,7 +146,7 @@ class TestMaintenanceTasks:
             )
         )
         await db_session.commit()
-        assert (await notify_overdue_tasks())["tasks"] == 0
+        assert (await _notify_overdue_tasks(limit=500))["tasks"] == 0
 
     async def test_expired_tokens_are_purged(
         self,
@@ -154,7 +154,7 @@ class TestMaintenanceTasks:
         user: User,
         eager_celery: None,
     ) -> None:
-        from app.workers.tasks.maintenance import purge_expired_tokens
+        from app.workers.tasks.maintenance import _purge_expired_tokens
 
         old = RefreshToken(
             user_id=user.id,
@@ -173,16 +173,16 @@ class TestMaintenanceTasks:
         db_session.add_all([old, fresh])
         await db_session.commit()
 
-        result = await purge_expired_tokens()
+        result = await _purge_expired_tokens(older_than_days=30)
         assert result["removed"] == 1
 
         remaining = (await db_session.execute(select(RefreshToken.jti))).scalars().all()
         assert remaining == [fresh.jti]
 
     async def test_worker_healthcheck(self, eager_celery: None) -> None:
-        from app.workers.tasks.maintenance import healthcheck
+        from app.workers.tasks.maintenance import _healthcheck
 
-        result = await healthcheck()
+        result = await _healthcheck()
         assert result["database"] is True
 
 

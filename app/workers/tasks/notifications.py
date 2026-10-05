@@ -13,8 +13,14 @@ a coroutine, and the worker then tries to JSON-encode that coroutine as the task
 
 The body of the task never runs, the result cannot be sent back, and the job fails
 silently from the caller's point of view. So each public task is a plain `def` that hands
-the work to `asyncio.run`, and the real logic lives in an `async def` helper next to it —
-which is also what makes that logic directly testable without a broker.
+the work to `asyncio.run`, and the real logic lives in an `async def` helper next to it.
+
+The helper is not just for tidiness — it is the only correct thing for a test to call.
+A worker owns its event loop for the whole task, and the SQLAlchemy engine is bound to
+whichever loop first used it. Awaiting a helper from inside an already-running loop keeps
+the connection on that loop; hopping the coroutine onto a thread with a *second* loop
+would leave asyncpg holding a connection from a loop that is no longer running
+(`RuntimeError: Event loop is closed`). One task, one loop, one engine.
 """
 
 from __future__ import annotations

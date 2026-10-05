@@ -5,7 +5,9 @@ are either pure reads or idempotent bulk updates.
 
 Like the notification jobs, the task functions are synchronous and hand the work to
 `asyncio.run` — Celery's prefork pool cannot await a coroutine, and an `async def` task
-would die in the result serialiser instead of doing its job.
+would die in the result serialiser instead of doing its job. A test that needs the
+behaviour awaits the `_*` helper directly, so the job runs on the test's own loop and the
+shared engine stays bound to it.
 """
 
 from __future__ import annotations
@@ -59,11 +61,18 @@ async def _notify_overdue_tasks(*, limit: int) -> dict[str, int]:
         announced = len(tasks)
 
     for user_id in assignees:
-        celery_app.send_task(
-            "app.workers.tasks.notifications.send_overdue_digest",
-            args=[str(user_id)],
-            queue="notifications",
-        )
+        try:
+            celery_app.send_task(
+                "app.workers.tasks.notifications.send_overdue_digest",
+                args=[str(user_id)],
+                queue="notifications",
+            )
+        except Exception as exc:
+            # The rows are already marked as announced, so a lost digest is not retried;
+            # failing the whole sweep instead would leave *every* other task unannounced.
+            # `AlwaysEagerIgnored` shows up here too: `send_task` has no eager path, so
+            # under `task_always_eager` (tests, one-off runs) it always raises.
+            logger.warning("overdue_digest_enqueue_failed", user_id=str(user_id), error=str(exc))
 
     logger.info("overdue_sweep_done", tasks=announced, users=len(assignees))
     return {"tasks": announced, "notified_users": len(assignees)}
