@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, status
 
 from app.api.deps import CurrentUser, PaginationDep, TaskServiceDep
 from app.api.filters import FilterSet, task_filters
-from app.api.responses import ACCESS_ERRORS, WRITE_ERRORS, build_page
+from app.api.responses import ACCESS_ERRORS, WRITE_ERRORS, build_page, to_schema
 from app.schemas.common import Message, PaginatedResponse
 from app.schemas.tag import TagAttach, TagRead
 from app.schemas.task import TaskCreate, TaskRead, TaskUpdate
@@ -38,7 +38,7 @@ async def create_task(
 ) -> TaskRead:
     """Create a task and notify the assignee through the background queue."""
     task = await service.create(payload, actor=current_user)
-    return TaskRead.model_validate(task, from_attributes=True)
+    return to_schema(task, TaskRead)
 
 
 @router.get(
@@ -78,7 +78,7 @@ async def list_tasks(
 async def read_task(task_id: uuid.UUID, service: TaskServiceDep, _user: CurrentUser) -> TaskRead:
     """Task detail with tags, project and assignee already loaded."""
     task = await service.get(task_id)
-    return TaskRead.model_validate(task, from_attributes=True)
+    return to_schema(task, TaskRead)
 
 
 @router.patch(
@@ -95,7 +95,7 @@ async def update_task(
 ) -> TaskRead:
     """Partial update; status and priority changes are written to the audit log."""
     task = await service.update(task_id, payload, actor=current_user)
-    return TaskRead.model_validate(task, from_attributes=True)
+    return to_schema(task, TaskRead)
 
 
 @router.patch(
@@ -111,7 +111,7 @@ async def complete_task(
 ) -> TaskRead:
     """Shortcut for ``PATCH /tasks/{id}`` with ``status=done``."""
     task = await service.complete(task_id, actor=current_user)
-    return TaskRead.model_validate(task, from_attributes=True)
+    return to_schema(task, TaskRead)
 
 
 @router.delete(
@@ -144,7 +144,7 @@ async def attach_tag(
 ) -> TaskRead:
     """Idempotent: attaching the same tag twice is a no-op, not an error."""
     task = await service.attach_tag(task_id, tag_id=payload.tag_id, actor=current_user)
-    return TaskRead.model_validate(task, from_attributes=True)
+    return to_schema(task, TaskRead)
 
 
 @router.delete(
@@ -161,7 +161,7 @@ async def detach_tag(
 ) -> TaskRead:
     """Remove one label; the task itself is untouched."""
     task = await service.detach_tag(task_id, tag_id=tag_id, actor=current_user)
-    return TaskRead.model_validate(task, from_attributes=True)
+    return to_schema(task, TaskRead)
 
 
 @router.get(
@@ -177,4 +177,4 @@ async def list_task_tags(
 ) -> list[TagRead]:
     """The labels currently attached to the task."""
     task = await service.get(task_id)
-    return [TagRead.model_validate(tag, from_attributes=True) for tag in task.tags]
+    return [to_schema(tag, TagRead) for tag in task.tags]

@@ -14,10 +14,9 @@ from fastapi import APIRouter, Depends, Query, status
 
 from app.api.deps import CurrentUser, PaginationDep, RequireAdmin, RequireStaff, UserServiceDep
 from app.api.filters import FilterSet, user_filters
-from app.api.responses import ACCESS_ERRORS, WRITE_ERRORS, build_page
+from app.api.responses import ACCESS_ERRORS, WRITE_ERRORS, build_page, to_schema
 from app.core.constants import Role
-from app.core.errors import PermissionDeniedError
-from app.core.permissions import can_manage_user
+from app.core.permissions import assert_read_user
 from app.schemas.common import Message, PaginatedResponse
 from app.schemas.user import UserCreate, UserRead, UserUpdate
 
@@ -61,7 +60,7 @@ async def create_user(
     Self-registration cannot do this: it always creates a plain ``user``.
     """
     user = await service.create(payload, role=role, actor=actor)
-    return UserRead.model_validate(user, from_attributes=True)
+    return to_schema(user, UserRead)
 
 
 @router.get(
@@ -77,9 +76,8 @@ async def read_user(
 ) -> UserRead:
     """Any authenticated user may read their own profile; staff may read anyone's."""
     target = await service.get(user_id)
-    if not can_manage_user(current_user, target):
-        raise PermissionDeniedError("You may only read your own profile")
-    return UserRead.model_validate(target, from_attributes=True)
+    assert_read_user(current_user, target)
+    return to_schema(target, UserRead)
 
 
 @router.patch(
@@ -99,7 +97,7 @@ async def update_user(
     Only an admin may change ``is_active`` or ``role`` — see `UserService._clean_values`.
     """
     user = await service.update(user_id, payload, actor=actor)
-    return UserRead.model_validate(user, from_attributes=True)
+    return to_schema(user, UserRead)
 
 
 @router.delete(
@@ -125,4 +123,4 @@ async def activate_user(
 ) -> UserRead:
     """Reactivate a previously soft-deleted account."""
     user = await service.reactivate(user_id, actor=actor)
-    return UserRead.model_validate(user, from_attributes=True)
+    return to_schema(user, UserRead)

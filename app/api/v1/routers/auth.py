@@ -16,6 +16,7 @@ from fastapi import APIRouter, Depends, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
 
 from app.api.deps import AuthServiceDep, CurrentUser
+from app.api.responses import to_schema
 from app.core.errors import AuthenticationError
 from app.core.logging import get_logger
 from app.models.user import User
@@ -144,7 +145,7 @@ async def logout_all(auth: AuthServiceDep, current_user: CurrentUser) -> Message
     tags=["auth"],
 )
 async def read_me(current_user: CurrentUser) -> UserRead:
-    return UserRead.model_validate(current_user, from_attributes=True)
+    return to_schema(current_user, UserRead)
 
 
 @router.patch(
@@ -162,7 +163,7 @@ async def update_me(
     user: User = await UserService(auth.session).update(
         current_user.id, payload, actor=current_user
     )
-    return UserRead.model_validate(user, from_attributes=True)
+    return to_schema(user, UserRead)
 
 
 @router.post(

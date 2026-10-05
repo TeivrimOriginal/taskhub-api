@@ -63,6 +63,16 @@ class PaginationParams:
 
 PaginationDep = Annotated[PaginationParams, Depends(PaginationParams)]
 
+# ----------------------------------------------------------------------
+# Short names used in the routers
+# ----------------------------------------------------------------------
+# A service is a normal class, so FastAPI has to build it. Each `*_service` function
+# below says how: "give me the session of this request, then give me the service".
+# The `Annotated[..., Depends(...)]` alias is what a router writes, so a router never
+# repeats the wiring and never has to know the name of the function.
+#
+#     async def list_projects(service: ProjectServiceDep, ...)  -> ready
+
 
 # -------------------------------------------------------------------- auth
 def get_auth_service(session: SessionDep, settings: SettingsDep) -> AuthService:
@@ -80,11 +90,15 @@ async def get_current_user(
 ) -> User:
     """Resolve the bearer token into a live, active user.
 
-    The session is not requested here: `AuthService` already owns one for the request, and
-    a second `Depends(get_session)` would create a second transaction.
+    This is the door of every protected endpoint: a handler that asks for `CurrentUser`
+    receives a real user object, or the request stops here with a 401.
+
+    The session is not asked for here on purpose: `AuthService` already owns one for this
+    request, and a second `Depends(get_session)` would open a second transaction.
     """
     token = _extract_token(request, credentials)
     user = await auth.authenticate(access_token=token)
+    # Put the id on the request, so the access log can say who called.
     request.state.user_id = str(user.id)
     return user
 
@@ -101,10 +115,15 @@ OptionalUser = Annotated[User | None, Depends(get_current_user)]
 
 
 def require_roles(*roles: Role) -> Callable[[User], Awaitable[User]]:
-    """Build a dependency that admits only the listed roles.
+    """Build a dependency that lets in only the listed roles.
 
-    A dependency factory instead of an `if` inside every handler: the permission rule is
-    declared once, next to the URL that needs it, and cannot be forgotten halfway.
+    A factory, not an `if` inside every handler, so the rule is written once next to the
+    URL that needs it and cannot be forgotten halfway::
+
+        @router.get("", dependencies=[Depends(require_roles(Role.ADMIN))])
+
+    The rule is about the *route*, so it is not a `role=` parameter here. The rule about
+    what a role may do to a *row* lives in `app.core.permissions`.
     """
 
     async def _dependency(user: CurrentUser) -> User:
@@ -118,6 +137,7 @@ def require_roles(*roles: Role) -> Callable[[User], Awaitable[User]]:
     return _dependency
 
 
+#: Ready-made dependencies for the two role groups used most often.
 RequireStaff = Annotated[User, Depends(require_roles(*STAFF_ROLES))]
 RequireAdmin = Annotated[User, Depends(require_roles(Role.ADMIN))]
 

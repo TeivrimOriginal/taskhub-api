@@ -20,7 +20,7 @@ from app.core.permissions import assert_manage_user, can_change_privileged_field
 from app.core.security import hash_password
 from app.models.user import User
 from app.repositories.user import UserRepository
-from app.schemas.user import UserCreate, UserRead, UserUpdate
+from app.schemas.user import UserCreate, UserUpdate
 
 logger = get_logger(__name__)
 
@@ -172,7 +172,3 @@ class UserService:
             values["username"] = new_username
 
         return values
-
-    def to_read(self, user: User) -> UserRead:
-        """Explicit ORM → schema conversion, so the password hash cannot leak."""
-        return UserRead.model_validate(user, from_attributes=True)

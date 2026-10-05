@@ -23,6 +23,7 @@ from app.core.permissions import (
     assert_edit_comment,
     assert_manage_user,
     assert_read_project,
+    assert_read_user,
     assert_write_project,
     assert_write_task,
     can_change_privileged_fields,
@@ -233,6 +234,13 @@ class TestUserRules:
     def test_a_moderator_is_not_an_admin(self) -> None:
         with pytest.raises(PermissionDeniedError):
             assert_manage_user(moderator, owner)
+
+    def test_reading_a_profile_follows_the_same_rule(self) -> None:
+        """Same rule as managing, different words in the message."""
+        assert_read_user(owner, owner)
+        assert_read_user(admin, owner)
+        with pytest.raises(PermissionDeniedError, match="read your own profile"):
+            assert_read_user(stranger, owner)
 
 
 class TestTheModuleIsTheOnlyPlaceWithTheRules:

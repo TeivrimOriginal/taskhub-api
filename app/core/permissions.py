@@ -162,6 +162,16 @@ def assert_manage_user(actor: User, target: User) -> None:
         raise PermissionDeniedError("You may only manage your own account")
 
 
+def assert_read_user(actor: User, target: User) -> None:
+    """Raise unless the actor may read the target profile.
+
+    The same rule as `assert_manage_user`, different words: someone asking to *see* a
+    profile should be told they may only see their own, not that they may only manage it.
+    """
+    if not can_manage_user(actor, target):
+        raise PermissionDeniedError("You may only read your own profile")
+
+
 def can_change_privileged_fields(actor: User) -> bool:
     """Only an admin may set ``is_active`` or ``role`` on somebody else."""
     return has_at_least(actor, Role.ADMIN)

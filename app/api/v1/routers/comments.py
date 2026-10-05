@@ -11,7 +11,7 @@ import uuid
 from fastapi import APIRouter, status
 
 from app.api.deps import CommentServiceDep, CurrentUser, PaginationDep
-from app.api.responses import ACCESS_ERRORS, WRITE_ERRORS, build_page
+from app.api.responses import ACCESS_ERRORS, WRITE_ERRORS, build_page, to_schema
 from app.schemas.comment import CommentCreate, CommentRead, CommentUpdate
 from app.schemas.common import Message, PaginatedResponse
 
@@ -58,7 +58,7 @@ async def create_comment(
 ) -> CommentRead:
     """Create a comment and an audit-log entry in the same transaction."""
     comment = await service.create(task_id=task_id, body=payload.body, actor=current_user)
-    return CommentRead.model_validate(comment, from_attributes=True)
+    return to_schema(comment, CommentRead)
 
 
 @router.patch(
@@ -75,7 +75,7 @@ async def update_comment(
 ) -> CommentRead:
     """Only the author, or a staff member, may edit a comment."""
     comment = await service.update(comment_id, body=payload.body, actor=current_user)
-    return CommentRead.model_validate(comment, from_attributes=True)
+    return to_schema(comment, CommentRead)
 
 
 @router.delete(

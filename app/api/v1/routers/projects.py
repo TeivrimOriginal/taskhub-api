@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, status
 
 from app.api.deps import CurrentUser, PaginationDep, ProjectServiceDep, TaskServiceDep
 from app.api.filters import FilterSet, project_filters, task_filters
-from app.api.responses import ACCESS_ERRORS, WRITE_ERRORS, build_page
+from app.api.responses import ACCESS_ERRORS, WRITE_ERRORS, build_page, to_schema
 from app.core.permissions import assert_read_project
 from app.schemas.common import Message, PaginatedResponse
 from app.schemas.project import ProjectCreate, ProjectRead, ProjectUpdate
@@ -46,7 +46,7 @@ async def create_project(
     cannot create a project "for" somebody else.
     """
     project = await service.create(payload, owner=current_user)
-    return ProjectRead.model_validate(project, from_attributes=True)
+    return to_schema(project, ProjectRead)
 
 
 @router.get(
@@ -87,7 +87,7 @@ async def read_project(
     """Project detail, including the denormalised task counters."""
     project = await service.get(project_id)
     assert_read_project(current_user, project)
-    return ProjectRead.model_validate(project, from_attributes=True)
+    return to_schema(project, ProjectRead)
 
 
 @router.patch(
@@ -104,7 +104,7 @@ async def update_project(
 ) -> ProjectRead:
     """Partial update. Only the owner or an admin may do it."""
     project = await service.update(project_id, payload, actor=current_user)
-    return ProjectRead.model_validate(project, from_attributes=True)
+    return to_schema(project, ProjectRead)
 
 
 @router.delete(

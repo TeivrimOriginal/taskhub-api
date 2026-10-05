@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, Query, status
 
 from app.api.deps import CurrentUser, PaginationDep, RequireStaff, TagServiceDep
 from app.api.filters import FilterSet, tag_filters
-from app.api.responses import ACCESS_ERRORS, WRITE_ERRORS, build_page
+from app.api.responses import ACCESS_ERRORS, WRITE_ERRORS, build_page, to_schema
 from app.schemas.common import Message, PaginatedResponse
 from app.schemas.tag import TagCreate, TagRead, TagUpdate
 
@@ -39,7 +39,7 @@ async def create_tag(
 ) -> TagRead:
     """Idempotent create: an existing tag with the same name is returned instead."""
     tag = await service.create(payload, creator=current_user)
-    return TagRead.model_validate(tag, from_attributes=True)
+    return to_schema(tag, TagRead)
 
 
 @router.get(
@@ -94,7 +94,7 @@ async def update_tag(
     """Rename a label everywhere it is used."""
     values = payload.model_dump(exclude_unset=True, exclude_none=True)
     tag = await service.update(tag_id, values=values, actor=actor)
-    return TagRead.model_validate(tag, from_attributes=True)
+    return to_schema(tag, TagRead)
 
 
 @router.delete(

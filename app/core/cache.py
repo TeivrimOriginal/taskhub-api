@@ -18,9 +18,11 @@ from __future__ import annotations
 
 import json
 import time
-from typing import Any
+from collections.abc import Awaitable, Callable
+from typing import Any, cast
 
 import redis.asyncio as aioredis
+from pydantic import BaseModel
 from redis.exceptions import RedisError
 
 from app.core.config import Settings, get_settings
@@ -162,6 +164,64 @@ async def set_json(key: str, value: Any, *, ttl: int | None = None) -> None:
     except RedisError as exc:
         logger.warning("cache_write_failed", key=key, error=str(exc))
         mark_unavailable()
+
+
+async def cached_value[ModelT](
+    key: str,
+    compute: Callable[[], Awaitable[ModelT]],
+    *,
+    schema: type[BaseModel] | None = None,
+    ttl: int | None = None,
+    use_cache: bool = True,
+) -> ModelT:
+    """Read a value from the cache, or build it and put it there.
+
+    This is the read-through pattern, written once. A service says *what* the value is,
+    not how to store it:
+
+        overview = await cached_value(
+            make_key("stats", user.id),
+            lambda: self._build(user.id),
+            schema=StatsOverview,
+        )
+
+    Args:
+        key: the cache key. Use ``make_key`` so the namespace is spelled the same way
+            everywhere.
+        compute: an async function that builds the value. It runs only on a miss, so it
+            may be as expensive as it likes.
+        schema: the Pydantic class of the value. Pass it whenever the value is a model —
+            Redis only holds JSON, so without this the function would hand back a plain
+            ``dict`` on a hit and a real object on a miss. Callers should never have to
+            know which of the two they got.
+        ttl: how long to keep the value. ``None`` takes ``CACHE_TTL_SECONDS``.
+        use_cache: pass ``False`` to force a rebuild — this is what ``?refresh=true`` does,
+            and the fresh value is still written back for the next reader.
+
+    The three outcomes are deliberate and always the same:
+        * hit  -> the cached value, rebuilt into ``schema``, and `compute` never runs;
+        * miss -> `compute` runs, the result is stored and returned;
+        * Redis is down -> `compute` runs and nothing is stored. A cache outage costs
+          speed, never correctness, and never an error.
+    """
+    settings = get_settings()
+    can_cache = use_cache and settings.cache_enabled
+
+    if can_cache:
+        raw = await get_json(key)
+        if raw is not None:
+            logger.debug("cache_hit", key=key)
+            # A value in Redis is always plain JSON, so it has to be rebuilt into the
+            # model the caller expects. Without `schema` the caller asked for whatever
+            # `compute` returns, and a dict stays a dict.
+            return cast(ModelT, schema.model_validate(raw) if schema is not None else raw)
+
+    value = await compute()
+
+    if can_cache:
+        payload = value.model_dump(mode="json") if isinstance(value, BaseModel) else value
+        await set_json(key, payload, ttl=ttl)
+    return value
 
 
 async def invalidate(*keys: str) -> int:

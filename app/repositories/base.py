@@ -1,4 +1,20 @@
-"""Generic CRUD repository shared by every entity."""
+"""Generic CRUD repository — the same six actions for every table.
+
+Why a base class
+----------------
+Seven tables need `get`, `find`, `insert`, `update`, `delete`, `count` and `paginate`.
+Writing them seven times is how the seven copies start to differ. So they are written
+once here, and every repository only adds the queries that are *specific* to its table
+(``make_listing``, ``bulk_overdue``, ``recalculate_counters`` …).
+
+How the layers fit
+------------------
+    router  ->  service  ->  repository  ->  SQL
+    HTTP       rules      queries        text
+
+A repository never decides *whether* an action is allowed; that is the service's job. It
+only knows how to ask the database for rows and how to give them back.
+"""
 
 from __future__ import annotations
 
@@ -13,16 +29,19 @@ from app.db.base import Base
 
 
 def rowcount(result: object) -> int:
-    """Row count of an `UPDATE`/`DELETE`, tolerating a driver that does not report it."""
+    """How many rows an `UPDATE` or `DELETE` touched.
+
+    Not every driver reports a count, so a missing value becomes 0 instead of `None`.
+    """
     return int(getattr(result, "rowcount", 0) or 0)
 
 
 class BaseRepository[ModelT: Base]:
     """CRUD primitives for one model.
 
-    The constructor takes the session, not the other way round: repositories are created
-    per request by the service layer, so one request can never accidentally reuse
-    another request's session.
+    The constructor takes the session, not the other way round. A repository is built per
+    request by the service layer, so one request can never reuse another request's
+    session — the most common way to get very strange bugs in async code.
     """
 
     model: type[ModelT]
@@ -32,10 +51,11 @@ class BaseRepository[ModelT: Base]:
 
     # ------------------------------------------------------------------ create
     async def insert(self, entity: ModelT, *, flush: bool = True) -> ModelT:
-        """Add an entity to the unit of work.
+        """Add a row and send it to the database.
 
-        `flush` and never `commit`: the transaction belongs to the service layer, which
-        may perform several writes before deciding whether they succeed together.
+        `flush` and never `commit`. A *flush* sends the SQL but keeps the transaction
+        open; a *commit* closes it. The service layer decides when the transaction ends,
+        because it may write several rows that must all succeed together — or all fail.
         """
         self.session.add(entity)
         if flush:
@@ -81,9 +101,13 @@ class BaseRepository[ModelT: Base]:
     ) -> tuple[list[ModelT], int]:
         """Apply `LIMIT/OFFSET` to a `SELECT` and return `(items, total)`.
 
-        The total comes from `COUNT(*) OVER ()`, so the page and its total cost one
-        round trip instead of two. The statement keeps its `ORDER BY` (only the implicit
-        ordering added by `paginate()` itself would be ambiguous).
+        A client asks for "page 3, size 20". The database has to answer two questions:
+        *which 20 rows* and *how many rows are there in total*. The obvious way is two
+        queries. This is one: `COUNT(*) OVER ()` adds the total as an extra column to
+        every row, so the page and its count arrive together.
+
+        The statement keeps the `ORDER BY` it was given — order must be decided before
+        the rows are cut, or page 3 and page 4 could show the same row.
         """
         total_window = func.count().over().label("total")
         paged = stmt.add_columns(total_window).limit(size).offset((page - 1) * size)

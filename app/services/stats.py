@@ -1,4 +1,8 @@
-"""Dashboard statistics service — cached, because it is read on every page load."""
+"""Dashboard statistics service - cached, because it is read on every page load.
+
+The cache itself lives in `app.core.cache.cached_value`, so this service only says what
+the number is and never repeats the "hit / miss / Redis is down" branches.
+"""
 
 from __future__ import annotations
 
@@ -7,7 +11,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.cache import get_json, make_key, set_json
+from app.core.cache import cached_value, make_key
 from app.core.config import Settings, get_settings
 from app.core.constants import TaskPriority, TaskStatus
 from app.core.logging import get_logger
@@ -27,21 +31,18 @@ class StatsService:
         self.stats = StatsRepository(session)
 
     async def overview(self, *, user: User, use_cache: bool = True) -> StatsOverview:
-        """Aggregated dashboard for one user."""
-        cache_key = make_key("stats", user.id)
+        """The dashboard for one user, with the cache handled by `cached_value`.
 
-        if use_cache and self.settings.cache_enabled:
-            cached = await get_json(cache_key)
-            if cached is not None:
-                logger.debug("stats_cache_hit", user_id=str(user.id))
-                return StatsOverview.model_validate(cached)
-
-        payload = await self._build(user.id)
-        if use_cache and self.settings.cache_enabled:
-            await set_json(
-                cache_key, payload.model_dump(mode="json"), ttl=self.settings.cache_ttl_seconds
-            )
-        return payload
+        `?refresh=true` on the endpoint arrives here as `use_cache=False`: it forces the
+        aggregates to be built again, and the fresh result is stored for the next reader.
+        """
+        return await cached_value(
+            make_key("stats", user.id),
+            lambda: self._build(user.id),
+            schema=StatsOverview,
+            ttl=self.settings.cache_ttl_seconds,
+            use_cache=use_cache,
+        )
 
     async def _build(self, user_id: uuid.UUID) -> StatsOverview:
         """One pass per aggregate — the database does the arithmetic."""
