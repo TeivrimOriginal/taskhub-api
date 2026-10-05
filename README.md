@@ -17,35 +17,45 @@
 
 ## What was actually run
 
-Every number below is copy-pasted from a real run, not estimated. Python 3.14.6,
-PostgreSQL 17.4 on `127.0.0.1:5434`, Redis reachable on `127.0.0.1:6379`:
+Every number below is copied from a real run of this commit, not estimated. The source is
+**GitHub Actions on `main`**, so anyone who is given access to this repository can re-run it
+and get the same answer - a stronger claim than a screenshot from somebody's laptop.
 
 ```
-pytest                         → 294 collected: 288 passed, 6 skipped
-                                 (6 skips are Redis-only: no Redis on this box)
-coverage (branch=True)         → TOTAL 4553 stmts, 358 miss, 408 branch, 88 partial, 90.24%
-                                 gate is 85% — reached
-ruff check .                   → All checks passed!
-ruff format --check .          → 98 files already formatted
-mypy                           → Success: no issues found in 89 source files
-alembic upgrade head           → 8 tables, identical to Base.metadata; citext + pg_trgm installed
-                                 (verified directly: 8 tables in information_schema,
-                                  pg_extension = citext, pg_trgm, plpgsql)
+Tests (Python 3.13)             386 passed, 1 skipped in 30.14s
+Tests (Python 3.12)             386 passed, 1 skipped in 28.38s
+                                (the 1 skip is a test that only runs when Redis is absent)
+Coverage gate (branch=True)     Total coverage: 91.59%  -  gate is 85%, reached
+Lint (ruff)                     All checks passed; 104 files already formatted
+Types (mypy strict)             Success: no issues found in 95 source files
+Migrations                      upgrade head, downgrade and schema comparison, all clean
+                                (8 tables, identical to Base.metadata; citext + pg_trgm)
+Compose stack (end to end)      passed: 70   failed: 0
+                                (real Postgres, Redis, Mailpit and a Celery worker, and it
+                                 asserts that the assignment e-mail really arrived)
 ```
 
-**Reproduce it — and watch the port.** The integration probe reads `TEST_DATABASE_URL`,
-then `POSTGRES_SYNC_URI`, then `POSTGRES_HOST`/`POSTGRES_PORT`, and that last one
-**defaults to 5432 while this project's `.env` points at 5434**. So a bare `pytest` on a
-box with PostgreSQL listening on 5434 does not fail — it quietly skips the whole
-integration directory and prints a *better looking* run:
+Ten jobs run on every push: lint, types, migrations, compose config, image build, the test
+matrix, the coverage gate, and the whole stack end to end. Nothing above is claimed that CI
+does not check.
+
+**Reproduce it locally - and watch the port.** The integration probe reads
+`TEST_DATABASE_URL`, then `POSTGRES_SYNC_URI`, then `POSTGRES_HOST`/`POSTGRES_PORT`, and
+that last one **defaults to 5432 while this project's `.env` points at 5434**. So a bare
+`pytest` on a box with PostgreSQL listening on 5434 does not fail - it quietly skips the
+whole integration directory and prints a *better looking* run:
+
+Measured back to back on one machine, on an earlier commit (the suite has grown since, so
+the totals are lower than the CI numbers above - the *ratio* is the point):
 
 | environment | result |
 |---|---|
-| port set, database reachable | `288 passed, 6 skipped` (6 skips = Redis absent) |
-| port not set, database invisible | `293 passed, 1 skipped` — the directory skips itself as one |
+| port set, database reachable | `293 passed, 1 skipped in 42.85s` (1 skip = a test that only runs when Redis is absent) |
+| port not set, database invisible | `140 passed, 154 skipped in 12.01s` — the directory skips itself as one |
 
-More tests "pass" without the database than with it, so the number alone will not tell you
-which happened. Set the port before believing a green run:
+**A green run with fewer tests is the failure mode, not the success one.** 140 vs 293: the
+number itself tells you the database was never touched, but only if you know which number to
+expect. Set the port before believing a green run:
 
 ```powershell
 $env:POSTGRES_PORT = "5434"
@@ -253,7 +263,7 @@ curl -X POST http://localhost:8000/api/v1/projects \
      -d '{"name":"Release 1.0","description":"Ship the thing","color":"#4F46E5"}'
 ```
 
-Or let the script do it — 67 assertions over the whole feature set, against a running
+Or let the script do it — 70 assertions over the whole feature set, against a running
 server:
 
 ```bash
@@ -269,7 +279,7 @@ python scripts/smoke.py --base-url http://localhost:8000
   PASS  POST /auth/logout -> 200
   PASS  refresh after logout -> 401
 ...
-passed: 67   failed: 0   elapsed: 2.40s
+passed: 70   failed: 0
 ```
 
 ### Without Docker (local development)
@@ -481,9 +491,9 @@ taskhub-api/
 │   ├── integration/             # real PostgreSQL (+ Redis when available)
 │   └── conftest.py              # fixtures: db, client, users, tokens
 ├── scripts/
-│   ├── smoke.py                   # 67 assertions against a *running* server
+│   ├── smoke.py                   # 70 assertions against a *running* server
 │   └── verify_migrations.py       # upgrade → diff vs models → downgrade (destructive)
-├── .github/workflows/           # ci.yml (8 jobs), release.yml
+├── .github/workflows/           # ci.yml (10 jobs), release.yml
 ├── .github/dependabot.yml
 ├── .pre-commit-config.yaml
 ├── .cz.toml                     # conventional commits
@@ -604,14 +614,14 @@ make test             # whole suite; prints the coverage report, enforces no gat
 make gate             # whole suite + the 85% gate (needs Python >= 3.14, see below)
 pytest -m unit        # fast, no database — ~1.5 s
 pytest -m integration -k task
-make smoke            # 67 assertions against a *running* server
+make smoke            # 70 assertions against a *running* server
 ```
 
-Measured on this machine (Python 3.14, PostgreSQL 17, Redis up):
+Measured by CI on `main` (Python 3.13, PostgreSQL 16, Redis as a service):
 
 ```
-280 passed, 1 skipped in 37.84s
-TOTAL   4441 stmts   314 miss   398 branch   82 partial   91.11%
+386 passed, 1 skipped in 30.14s
+Total coverage: 91.59%
 Required test coverage of 85% reached.
 ```
 
@@ -683,8 +693,8 @@ still prints the report; just do not trust it.
 ```
 $ make verify
 lint        → All checks passed!
-types       → Success: no issues found in 87 source files
-gate        → 280 passed, 1 skipped; TOTAL 4441 stmts 314 miss 91.11%
+types       → Success: no issues found in 95 source files
+gate        → 386 passed, 1 skipped; Total coverage: 91.59%
               Required test coverage of 85% reached.
 migrations  → No new upgrade operations detected.
 OK: lint, types, tests, the coverage gate and migration state all pass
