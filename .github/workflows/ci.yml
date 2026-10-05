@@ -412,9 +412,17 @@ jobs:
       - name: The migration container must have succeeded
         # `migrate` is a one-shot service. If it failed, every later service is starting
         # against a schema that does not exist, and `--wait` would still pass for them.
+        # `--all` is load-bearing: `docker compose ps` lists running containers only, so
+        # a container that exited 0 — the exact one this step inspects — is invisible
+        # without it, and `docker inspect` then gets an empty ID and fails.
         run: |
-          state="$(docker inspect --format '{{.State.Status}} {{.State.ExitCode}}' \
-            "$(docker compose ps -q migrate)")"
+          container_id="$(docker compose ps -q --all migrate)"
+          test -n "$container_id" || {
+            echo "::error::no migrate container to inspect"
+            docker compose ps --all
+            exit 1
+          }
+          state="$(docker inspect --format '{{.State.Status}} {{.State.ExitCode}}' "$container_id")"
           echo "migrate: $state"
           test "$state" = "exited 0" || {
             echo "::error::the migrate service did not exit 0"
